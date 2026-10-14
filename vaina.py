@@ -4,6 +4,11 @@ import pandas as pd
 from datetime import datetime
 import io
 
+try:
+    import libsql
+except ImportError:
+    libsql = None
+
 # --- CONFIGURACIÓN DE INTERFAZ Y ESTILOS MINIMALISTAS ---
 st.set_page_config(page_title="Punto Yali - ERP", layout="wide")
 
@@ -46,12 +51,21 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
+# --- CONFIGURACIÓN DE BASE DE DATOS (HÍBRIDA: LOCAL O TURSO) ---
 def conectar_db():
-    conn = sqlite3.connect('sistema_negocio.db', timeout=10, check_same_thread=False)
-    # ⚡ MODO ANTI-APAGONES: Escritura directa en disco contra cortes eléctricos
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
+    if "TURSO_URL" in st.secrets and libsql is not None:
+        conn = libsql.connect(
+            database=st.secrets["TURSO_URL"],
+            auth_token=st.secrets["TURSO_TOKEN"]
+        )
+    else:
+        conn = sqlite3.connect('sistema_negocio.db', timeout=10, check_same_thread=False)
+        # ⚡ MODO ANTI-APAGONES: Escritura directa en disco contra cortes eléctricos
+        try:
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
+        except Exception:
+            pass
     return conn
 
 def parse_float(val, default=0.0):
@@ -214,7 +228,7 @@ def migracion_segura_db():
         for tabla, columna, tipo in columnas_a_verificar:
             try:
                 cursor.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass 
         conn.commit()
 
@@ -327,7 +341,6 @@ if modulo == "🛠️ Mantenimiento de Sistema":
             for tabla in tablas_a_limpiar:
                 try:
                     cursor.execute(f"DELETE FROM {tabla}")
-                    cursor.execute("DELETE FROM sqlite_sequence WHERE name=?", (tabla,))
                 except Exception:
                     pass
             conn.commit()
@@ -527,8 +540,8 @@ elif modulo == "📦 Inventario y Productos":
                         conn.commit()
                         st.success("✔️ Producto registrado correctamente.")
                         st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("❌ Ya existe un producto registrado con ese mismo nombre.")
+                    except Exception:
+                        st.error("❌ Ya existe un producto registrado con ese mismo nombre o hubo un error.")
                 else:
                     st.warning("⚠️ Debes asignarle un nombre al producto.")
 
@@ -545,7 +558,7 @@ elif modulo == "📦 Inventario y Productos":
                             conn.commit()
                             st.success("Categoría creada.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except Exception:
                             st.error("Ya existe.")
         with c_list_cat:
             st.markdown("**Categorías Activas:**")
@@ -1047,7 +1060,7 @@ elif modulo == "💰 Finanzas y Capital":
         st.info("No hay movimientos extraordinarios registrados.")
 
     # ==========================================
-    # NUEVO APARTADO: NOTAS Y PRÉSTAMOS PERSONALES
+    # APARTADO: NOTAS Y PRÉSTAMOS PERSONALES
     # ==========================================
     st.markdown("---")
     st.subheader("📝 Notas y Préstamos Personales (Fuera de Caja)")
@@ -1341,7 +1354,6 @@ elif modulo == "📜 Historial de Cierres":
     if not df_cierres.empty:
         st.dataframe(df_cierres, use_container_width=True, hide_index=True)
         
-        @st.cache_data
         def convertir_a_excel(df):
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
