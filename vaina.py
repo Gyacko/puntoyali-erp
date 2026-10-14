@@ -3,6 +3,8 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import io
+import subprocess
+import os
 
 try:
     import libsql_experimental as libsql
@@ -49,22 +51,30 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-
-# --- CONFIGURACIÓN DE BASE DE DATOS (HÍBRIDA: LOCAL O TURSO) ---
-def conectar_db():
-    if "TURSO_URL" in st.secrets and libsql is not None:
-        return libsql.connect(
-            database=st.secrets["TURSO_URL"],
-            auth_token=st.secrets["TURSO_TOKEN"]
-        )
-    else:
-        conn = sqlite3.connect('sistema_negocio.db', timeout=10, check_same_thread=False)
+def sincronizar_con_github_al_guardar():
+    """Sube automáticamente el archivo de base de datos actualizado a GitHub"""
+    if "GITHUB_TOKEN" in st.secrets and os.path.exists('sistema_negocio.db'):
         try:
-            conn.execute("PRAGMA journal_mode = WAL;")
-            conn.execute("PRAGMA synchronous = NORMAL;")
+            token = st.secrets["GITHUB_TOKEN"]
+            repo = st.secrets["GITHUB_REPO"]
+            repo_url = f"https://{token}@github.com/{repo}.git"
+            
+            subprocess.run(["git", "config", "--global", "user.email", "erp@puntoyali.com"], capture_output=True)
+            subprocess.run(["git", "config", "--global", "user.name", "Punto Yali Bot"], capture_output=True)
+            subprocess.run(["git", "add", "sistema_negocio.db"], capture_output=True)
+            subprocess.run(["git", "commit", "-m", f"Actualización automática BD: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"], capture_output=True)
+            subprocess.run(["git", "push", repo_url, "HEAD:main"], capture_output=True)
         except Exception:
             pass
-        return conn
+# --- CONFIGURACIÓN DE BASE DE DATOS (HÍBRIDA: LOCAL O TURSO) ---
+def conectar_db():
+    conn = sqlite3.connect('sistema_negocio.db', timeout=10, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except Exception:
+        pass
+    return conn
 
 def parse_float(val, default=0.0):
     if val is None:
