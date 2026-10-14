@@ -5,10 +5,9 @@ from datetime import datetime
 import io
 
 try:
-    import libsql
+    import libsql_experimental as libsql
 except ImportError:
     libsql = None
-
 # --- CONFIGURACIÓN DE INTERFAZ Y ESTILOS MINIMALISTAS ---
 st.set_page_config(page_title="Punto Yali - ERP", layout="wide")
 
@@ -54,7 +53,7 @@ st.markdown("""
 # --- CONFIGURACIÓN DE BASE DE DATOS (HÍBRIDA: LOCAL O TURSO) ---
 def conectar_db():
     if "TURSO_URL" in st.secrets and libsql is not None:
-        conn = libsql.connect(
+        return libsql.connect(
             database=st.secrets["TURSO_URL"],
             auth_token=st.secrets["TURSO_TOKEN"]
         )
@@ -65,7 +64,7 @@ def conectar_db():
             conn.execute("PRAGMA synchronous = NORMAL;")
         except Exception:
             pass
-    return conn
+        return conn
 
 def parse_float(val, default=0.0):
     if val is None:
@@ -83,110 +82,61 @@ def inicializar_db():
     cursor = conn.cursor()
     
     # Tablas principales
-    cursor.execute('''CREATE TABLE IF NOT EXISTS cierres_diarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        fecha TEXT, 
-        ganancia_neta REAL,
-        efectivo_usd REAL,
-        efectivo_bs REAL,
-        punto_neto REAL,
-        pago_movil_transferencia REAL,
-        balance_total_usd REAL
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS productos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        nombre TEXT UNIQUE, 
-        categoria TEXT, 
-        precio_venta REAL, 
-        costo_insumo REAL, 
-        porcentaje_ganancia REAL DEFAULT 0,
-        aplica_iva INTEGER DEFAULT 0,
-        stock REAL
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS ventas_maestro (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        fecha TEXT, 
-        subtotal REAL, 
-        impuesto REAL, 
-        total REAL, 
-        metodo_pago TEXT, 
-        cliente TEXT,
-        monto_efectivo_usd REAL DEFAULT 0,
-        monto_efectivo_bs REAL DEFAULT 0,
-        monto_pago_movil REAL DEFAULT 0,
-        monto_punto REAL DEFAULT 0
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS ventas_detalle (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        venta_id INTEGER, 
-        producto_id INTEGER, 
-        cantidad INTEGER, 
-        precio_unitario REAL, 
-        FOREIGN KEY(venta_id) REFERENCES ventas_maestro(id), 
-        FOREIGN KEY(producto_id) REFERENCES productos(id)
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS egresos_maestro (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        fecha TEXT, 
-        proveedor TEXT, 
-        tipo_gasto TEXT, 
-        subtotal REAL, 
-        porcentaje_impuesto REAL, 
-        monto_impuesto REAL, 
-        total REAL,
-        origen_fondo TEXT DEFAULT 'Banco Bs.',
-        monto_efectivo_usd REAL DEFAULT 0,
-        monto_efectivo_bs REAL DEFAULT 0,
-        monto_bancos_bs REAL DEFAULT 0
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS egresos_detalle (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        egreso_id INTEGER, 
-        producto_id INTEGER, 
-        cantidad INTEGER, 
-        costo_unitario REAL, 
-        FOREIGN KEY(egreso_id) REFERENCES egresos_maestro(id), 
-        FOREIGN KEY(producto_id) REFERENCES productos(id)
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS deudas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        cliente TEXT, 
-        monto_total REAL, 
-        saldo_pendiente REAL, 
-        fecha_origen TEXT, 
-        ultima_actualizacion TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS prestamos_personales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT,
-        persona TEXT,
-        monto REAL,
-        concepto TEXT,
-        estado TEXT DEFAULT 'Pendiente'
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS historial_inventario (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        producto_id INTEGER, 
-        producto_nombre TEXT, 
-        fecha TEXT, 
-        stock_anterior REAL, 
-        stock_nuevo REAL, 
-        motivo TEXT
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS movimientos_capital (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT,
-        tipo TEXT,
-        efectivo_usd REAL DEFAULT 0,
-        efectivo_bs REAL DEFAULT 0,
-        bancos_bs REAL DEFAULT 0,
-        concepto TEXT
-    )''')
+    queries = [
+        '''CREATE TABLE IF NOT EXISTS cierres_diarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, ganancia_neta REAL,
+            efectivo_usd REAL, efectivo_bs REAL, punto_neto REAL,
+            pago_movil_transferencia REAL, balance_total_usd REAL
+        )''',
+        '''CREATE TABLE IF NOT EXISTS productos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE, categoria TEXT, 
+            precio_venta REAL, costo_insumo REAL, porcentaje_ganancia REAL DEFAULT 0,
+            aplica_iva INTEGER DEFAULT 0, stock REAL
+        )''',
+        '''CREATE TABLE IF NOT EXISTS ventas_maestro (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, subtotal REAL, impuesto REAL, 
+            total REAL, metodo_pago TEXT, cliente TEXT, monto_efectivo_usd REAL DEFAULT 0,
+            monto_efectivo_bs REAL DEFAULT 0, monto_pago_movil REAL DEFAULT 0, monto_punto REAL DEFAULT 0
+        )''',
+        '''CREATE TABLE IF NOT EXISTS ventas_detalle (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, venta_id INTEGER, producto_id INTEGER, 
+            cantidad INTEGER, precio_unitario REAL
+        )''',
+        '''CREATE TABLE IF NOT EXISTS egresos_maestro (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, proveedor TEXT, tipo_gasto TEXT, 
+            subtotal REAL, porcentaje_impuesto REAL, monto_impuesto REAL, total REAL,
+            origen_fondo TEXT DEFAULT 'Banco Bs.', monto_efectivo_usd REAL DEFAULT 0,
+            monto_efectivo_bs REAL DEFAULT 0, monto_bancos_bs REAL DEFAULT 0
+        )''',
+        '''CREATE TABLE IF NOT EXISTS egresos_detalle (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, egreso_id INTEGER, producto_id INTEGER, 
+            cantidad INTEGER, costo_unitario REAL
+        )''',
+        '''CREATE TABLE IF NOT EXISTS deudas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, cliente TEXT, monto_total REAL, 
+            saldo_pendiente REAL, fecha_origen TEXT, ultima_actualizacion TEXT
+        )''',
+        '''CREATE TABLE IF NOT EXISTS prestamos_personales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, persona TEXT, 
+            monto REAL, concepto TEXT, estado TEXT DEFAULT 'Pendiente'
+        )''',
+        '''CREATE TABLE IF NOT EXISTS historial_inventario (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, producto_id INTEGER, producto_nombre TEXT, 
+            fecha TEXT, stock_anterior REAL, stock_nuevo REAL, motivo TEXT
+        )''',
+        '''CREATE TABLE IF NOT EXISTS movimientos_capital (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, tipo TEXT, 
+            efectivo_usd REAL DEFAULT 0, efectivo_bs REAL DEFAULT 0, 
+            bancos_bs REAL DEFAULT 0, concepto TEXT
+        )''',
+        '''CREATE TABLE IF NOT EXISTS categorias (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE)''',
+        '''CREATE TABLE IF NOT EXISTS notas_generales (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, nota TEXT)''',
+        '''CREATE TABLE IF NOT EXISTS configuracion (clave TEXT PRIMARY KEY, valor TEXT)'''
+    ]
     
-    cursor.execute('''CREATE TABLE IF NOT EXISTS categorias (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS notas_generales (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, nota TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS configuracion (clave TEXT PRIMARY KEY, valor TEXT)''')
-    
+    for q in queries:
+        cursor.execute(q)
+        
     cursor.execute("SELECT COUNT(*) FROM configuracion WHERE clave = 'tasa_dolar'")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO configuracion (clave, valor) VALUES ('tasa_dolar', '880.0')")
@@ -198,7 +148,6 @@ def inicializar_db():
             cursor.execute("INSERT OR IGNORE INTO categorias (nombre) VALUES (?)", (c,))
             
     conn.commit()
-    conn.close()
 
 def migracion_segura_db():
     conn = conectar_db()
@@ -230,23 +179,22 @@ def migracion_segura_db():
         except Exception:
             pass 
     conn.commit()
-    conn.close()
 
 def obtener_tasa_actual():
     conn = conectar_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT valor FROM configuracion WHERE clave = 'tasa_dolar'")
-    resultado = cursor.fetchone()
-    val = float(resultado[0]) if resultado else 880.0
-    conn.close()
-    return val
+    try:
+        cursor.execute("SELECT valor FROM configuracion WHERE clave = 'tasa_dolar'")
+        resultado = cursor.fetchone()
+        return float(resultado[0]) if resultado else 880.0
+    except Exception:
+        return 880.0
 
 def guardar_tasa_actual(nueva_tasa):
     conn = conectar_db()
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES ('tasa_dolar', ?)", (str(nueva_tasa),))
     conn.commit()
-    conn.close()
 
 inicializar_db()
 migracion_segura_db()
