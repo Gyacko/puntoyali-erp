@@ -254,6 +254,7 @@ def migracion_segura_db():
     conn.commit()
     conn.close()
 
+@st.cache_data(ttl=120)
 def obtener_tasa_actual():
     with conectar_db() as conn:
         cursor = conn.cursor()
@@ -266,9 +267,13 @@ def guardar_tasa_actual(nueva_tasa):
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES ('tasa_dolar', ?)", (str(nueva_tasa),))
         conn.commit()
+    obtener_tasa_actual.clear()
 
-inicializar_db()
-migracion_segura_db()
+# --- OPTIMIZACIÓN: EJECUTAR INICIALIZACIÓN Y MIGRACIÓN UNA SOLA VEZ POR SESIÓN ---
+if 'db_inicializada' not in st.session_state:
+    inicializar_db()
+    migracion_segura_db()
+    st.session_state.db_inicializada = True
 
 if 'carrito' not in st.session_state:
     st.session_state.carrito = []
@@ -1396,3 +1401,4 @@ elif modulo == "📜 Historial de Cierres":
 
 if conn:
     conn.close()
+    
