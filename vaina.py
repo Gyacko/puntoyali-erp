@@ -54,20 +54,32 @@ st.markdown("""
 # --- CONFIGURACIÓN DE BASE DE DATOS (HÍBRIDA: LOCAL O TURSO) ---
 def conectar_db():
     usar_turso = False
+    turso_url = None
+    turso_token = None
+    
+    # 1. Intentar leer de st.secrets (Streamlit Cloud)
     try:
         if "TURSO_URL" in st.secrets and libsql is not None:
+            turso_url = st.secrets["TURSO_URL"]
+            turso_token = st.secrets.get("TURSO_TOKEN", "")
             usar_turso = True
     except Exception:
-        usar_turso = False
+        pass
+        
+    # 2. Intentar leer de variables de entorno (Railway, Render, etc.)
+    if not usar_turso and libsql is not None:
+        if os.getenv("TURSO_URL"):
+            turso_url = os.getenv("TURSO_URL")
+            turso_token = os.getenv("TURSO_TOKEN", "")
+            usar_turso = True
 
-    if usar_turso:
+    if usar_turso and turso_url:
         conn = libsql.connect(
-            database=st.secrets["TURSO_URL"],
-            auth_token=st.secrets["TURSO_TOKEN"]
+            database=turso_url,
+            auth_token=turso_token
         )
     else:
         conn = sqlite3.connect('sistema_negocio.db', timeout=10, check_same_thread=False)
-        # ⚡ MODO ANTI-APAGONES: Escritura directa en disco contra cortes eléctricos
         try:
             conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute("PRAGMA synchronous = NORMAL;")
