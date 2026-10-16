@@ -134,7 +134,8 @@ def inicializar_db():
         monto_efectivo_usd REAL DEFAULT 0,
         monto_efectivo_bs REAL DEFAULT 0,
         monto_pago_movil REAL DEFAULT 0,
-        monto_punto REAL DEFAULT 0
+        monto_punto REAL DEFAULT 0,
+        deuda_id INTEGER DEFAULT NULL
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS ventas_detalle (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -232,6 +233,7 @@ def migracion_segura_db():
         ("ventas_maestro", "monto_efectivo_bs", "REAL DEFAULT 0"),
         ("ventas_maestro", "monto_pago_movil", "REAL DEFAULT 0"),
         ("ventas_maestro", "monto_punto", "REAL DEFAULT 0"),
+        ("ventas_maestro", "deuda_id", "INTEGER DEFAULT NULL"),
         ("productos", "unidades_por_caja", "REAL DEFAULT 1"),
         ("productos", "es_cigarrillo", "INTEGER DEFAULT 0"),
         ("productos", "porcentaje_ganancia", "REAL DEFAULT 0"),
@@ -658,26 +660,32 @@ elif modulo == "🛒 Registrar Venta (Punto de Venta)":
                     if st.button("✅ Registrar Venta", type="primary", disabled=bloquear_reg):
                         cursor = conn.cursor()
                         ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        cursor.execute("INSERT INTO ventas_maestro (fecha, subtotal, impuesto, total, metodo_pago, cliente, monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                       (ahora, total_usd, 0.0, monto_ingreso_caja, metodo_final, cliente_name, m_ef_usd, m_ef_bs, m_pm, m_ptv))
-                        v_id = cursor.lastrowid
+                        
+                        deuda_id = None
                         detalles_compra = ", ".join([f"{item['cantidad_pantalla']}x {item['nombre']}" for item in st.session_state.carrito])
+                        
+                        if not pago_mixto and metodo_pago == "Fiado (Crédito)":
+                            cursor.execute("SELECT id, detalles FROM deudas WHERE cliente = ? AND saldo_pendiente >= 0.01", (cliente_name,))
+                            deuda_ex = cursor.fetchone()
+                            if deuda_ex:
+                                deuda_id = int(deuda_ex[0])
+                                nuevos_det = f"{deuda_ex[1]} | + {detalles_compra}" if deuda_ex[1] else detalles_compra
+                                cursor.execute("UPDATE deudas SET monto_total = monto_total + ?, saldo_pendiente = saldo_pendiente + ?, ultima_actualizacion = ?, detalles = ? WHERE id = ?",
+                                               (total_usd, total_usd, ahora, nuevos_det, deuda_id))
+                            else:
+                                cursor.execute("INSERT INTO deudas (cliente, monto_total, saldo_pendiente, fecha_origen, ultima_actualizacion, detalles) VALUES (?, ?, ?, ?, ?, ?)",
+                                               (cliente_name, total_usd, total_usd, ahora, ahora, detalles_compra))
+                                deuda_id = cursor.lastrowid
+
+                        cursor.execute("INSERT INTO ventas_maestro (fecha, subtotal, impuesto, total, metodo_pago, cliente, monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto, deuda_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                       (ahora, total_usd, 0.0, monto_ingreso_caja, metodo_final, cliente_name, m_ef_usd, m_ef_bs, m_pm, m_ptv, deuda_id))
+                        v_id = cursor.lastrowid
                         
                         for item in st.session_state.carrito:
                             cursor.execute("INSERT INTO ventas_detalle (venta_id, producto_id, cantidad, precio_unitario, unidades_stock) VALUES (?, ?, ?, ?, ?)", 
                                            (v_id, item['id'], item['cantidad_pantalla'], item['precio_u'], item['unidades_stock']))
                             cursor.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (item['unidades_stock'], item['id']))
                             
-                        if not pago_mixto and metodo_pago == "Fiado (Crédito)":
-                            cursor.execute("SELECT id, detalles FROM deudas WHERE cliente = ? AND saldo_pendiente >= 0.01", (cliente_name,))
-                            deuda_ex = cursor.fetchone()
-                            if deuda_ex:
-                                nuevos_det = f"{deuda_ex[1]} | + {detalles_compra}" if deuda_ex[1] else detalles_compra
-                                cursor.execute("UPDATE deudas SET monto_total = monto_total + ?, saldo_pendiente = saldo_pendiente + ?, ultima_actualizacion = ?, detalles = ? WHERE id = ?",
-                                               (total_usd, total_usd, ahora, nuevos_det, int(deuda_ex[0])))
-                            else:
-                                cursor.execute("INSERT INTO deudas (cliente, monto_total, saldo_pendiente, fecha_origen, ultima_actualizacion, detalles) VALUES (?, ?, ?, ?, ?, ?)",
-                                               (cliente_name, total_usd, total_usd, ahora, ahora, detalles_compra))
                         conn.commit()
                         st.session_state.carrito = []
                         st.success("🎉 ¡Venta registrada!")
@@ -778,19 +786,51 @@ elif modulo == "💰 Finanzas y Capital":
                 st.rerun()
 
 # ==========================================
-# MÓDULO: DEUDORES (FIADOS CORREGIDO)
+# MÓDULO: DEUDORES (FIADOS CON TABLA DETALLADA)
 # ==========================================
 elif modulo == "👥 Control de Deudores (Fiados)":
     st.title("👥 Cuentas por Cobrar (Fiados)")
-    df_deudas = pd.read_sql_query("SELECT id, cliente, saldo_pendiente, detalles FROM deudas WHERE saldo_pendiente >= 0.01", conn)
+    df_deudas = pd.read_sql_query("SELECT id, cliente, saldo_pendiente FROM deudas WHERE saldo_pendiente >= 0.01", conn)
     
     if not df_deudas.empty:
         for _, row in df_deudas.iterrows():
-            d_id, cliente_actual, saldo_usd, detalles_deuda = int(row['id']), row['cliente'], float(row['saldo_pendiente']), row['detalles']
-            with st.expander(f"👤 **{cliente_actual}** — Deuda: **${saldo_usd:.2f}** *({saldo_usd * tasa_dolar:,.2f} Bs.)*"):
-                st.markdown(f"**🛒 Artículos / Cuenta Activa:**\n\n {detalles_deuda if detalles_deuda else 'Sin detalle registrado.'}")
-                st.markdown("---")
+            d_id = int(row['id'])
+            cliente_actual = row['cliente']
+            saldo_usd = float(row['saldo_pendiente'])
+            saldo_bs = saldo_usd * tasa_dolar
+            
+            with st.expander(f"👤 **{cliente_actual}** — Deuda: **${saldo_usd:.2f}** *({saldo_bs:,.2f} Bs.)*"):
+                query_articulos = """
+                    SELECT p.nombre, vd.cantidad, vd.precio_unitario, vm.fecha
+                    FROM ventas_detalle vd
+                    JOIN productos p ON vd.producto_id = p.id
+                    JOIN ventas_maestro vm ON vd.venta_id = vm.id
+                    WHERE vm.deuda_id = ?
+                """
+                df_articulos = pd.read_sql_query(query_articulos, conn, params=(d_id,))
                 
+                if not df_articulos.empty:
+                    items_formateados = []
+                    for _, art in df_articulos.iterrows():
+                        p_u_usd = float(art['precio_unitario'])
+                        p_u_bs = p_u_usd * tasa_dolar
+                        cant = art['cantidad']
+                        sub_usd = cant * p_u_usd
+                        sub_bs = sub_usd * tasa_dolar
+                        items_formateados.append({
+                            "Fecha": art['fecha'],
+                            "Artículo": art['nombre'],
+                            "Cant.": cant,
+                            "Precio Unit. ($)": f"${p_u_usd:.2f}",
+                            "Precio Unit. (Bs.)": f"{p_u_bs:,.2f} Bs.",
+                            "Subtotal ($)": f"${sub_usd:.2f}",
+                            "Subtotal (Bs.)": f"{sub_bs:,.2f} Bs."
+                        })
+                    st.dataframe(pd.DataFrame(items_formateados), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Sin artículos detallados para esta cuenta.")
+
+                st.markdown("---")
                 monto_abono = st.number_input("Monto a abonar ($)", min_value=0.01, max_value=saldo_usd, value=saldo_usd, key=f"abono_{d_id}")
                 metodo_abono = st.selectbox("Método de Abono", ["Efectivo (Divisa/USD)", "Efectivo (Bolívares)", "Pago Móvil / Transferencia", "Punto de Venta (Tarjeta)"], key=f"met_abono_{d_id}")
                 
@@ -830,7 +870,6 @@ elif modulo == "📊 Dashboard / Cierre Caja":
     df_v = pd.read_sql_query("SELECT * FROM ventas_maestro WHERE fecha LIKE ?", conn, params=(param_hoy,))
     df_e = pd.read_sql_query("SELECT total FROM egresos_maestro WHERE fecha LIKE ?", conn, params=(param_hoy,))
     
-    # Consulta de costos corregida con unidades proporcionales y excluyendo abonos/consumo interno
     df_c = pd.read_sql_query("""
         SELECT SUM(
             COALESCE(vd.unidades_stock, vd.cantidad) * (
