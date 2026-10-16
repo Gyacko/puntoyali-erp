@@ -786,11 +786,14 @@ elif modulo == "💰 Finanzas y Capital":
                 st.rerun()
 
 # ==========================================
-# MÓDULO: DEUDORES (FIADOS CON TABLA DETALLADA)
+# MÓDULO: DEUDORES (FIADOS CORREGIDO DEFINITIVO)
 # ==========================================
 elif modulo == "👥 Control de Deudores (Fiados)":
     st.title("👥 Cuentas por Cobrar (Fiados)")
-    df_deudas = pd.read_sql_query("SELECT id, cliente, saldo_pendiente FROM deudas WHERE saldo_pendiente >= 0.01", conn)
+    st.caption("Desglose individual por deudor y abonos.")
+    
+    # Leemos la deuda activa junto con su fecha de origen
+    df_deudas = pd.read_sql_query("SELECT id, cliente, saldo_pendiente, fecha_origen FROM deudas WHERE saldo_pendiente >= 0.01", conn)
     
     if not df_deudas.empty:
         for _, row in df_deudas.iterrows():
@@ -798,16 +801,21 @@ elif modulo == "👥 Control de Deudores (Fiados)":
             cliente_actual = row['cliente']
             saldo_usd = float(row['saldo_pendiente'])
             saldo_bs = saldo_usd * tasa_dolar
+            fecha_origen = row['fecha_origen']
             
             with st.expander(f"👤 **{cliente_actual}** — Deuda: **${saldo_usd:.2f}** *({saldo_bs:,.2f} Bs.)*"):
+                # Consultamos las ventas fiadas de este cliente desde la fecha en que se inició esta deuda actual
                 query_articulos = """
                     SELECT p.nombre, vd.cantidad, vd.precio_unitario, vm.fecha
                     FROM ventas_detalle vd
                     JOIN productos p ON vd.producto_id = p.id
                     JOIN ventas_maestro vm ON vd.venta_id = vm.id
-                    WHERE vm.deuda_id = ?
+                    WHERE vm.cliente = ? 
+                      AND vm.metodo_pago = 'Fiado (Crédito)'
+                      AND vm.fecha >= ?
+                    ORDER BY vm.fecha DESC
                 """
-                df_articulos = pd.read_sql_query(query_articulos, conn, params=(d_id,))
+                df_articulos = pd.read_sql_query(query_articulos, conn, params=(cliente_actual, fecha_origen))
                 
                 if not df_articulos.empty:
                     items_formateados = []
@@ -818,7 +826,6 @@ elif modulo == "👥 Control de Deudores (Fiados)":
                         sub_usd = cant * p_u_usd
                         sub_bs = sub_usd * tasa_dolar
                         items_formateados.append({
-                            "Fecha": art['fecha'],
                             "Artículo": art['nombre'],
                             "Cant.": cant,
                             "Precio Unit. ($)": f"${p_u_usd:.2f}",
@@ -828,35 +835,38 @@ elif modulo == "👥 Control de Deudores (Fiados)":
                         })
                     st.dataframe(pd.DataFrame(items_formateados), use_container_width=True, hide_index=True)
                 else:
-                    st.info("Sin artículos detallados para esta cuenta.")
+                    st.info("No hay artículos registrados para este período de deuda.")
 
                 st.markdown("---")
                 monto_abono = st.number_input("Monto a abonar ($)", min_value=0.01, max_value=saldo_usd, value=saldo_usd, key=f"abono_{d_id}")
-                metodo_abono = st.selectbox("Método de Abono", ["Efectivo (Divisa/USD)", "Efectivo (Bolívares)", "Pago Móvil / Transferencia", "Punto de Venta (Tarjeta)"], key=f"met_abono_{d_id}")
+                metodo_pago_abono = st.selectbox("Método de Abono", ["Efectivo (Divisa/USD)", "Efectivo (Bolívares)", "Pago Móvil / Transferencia", "Punto de Venta (Tarjeta)"], key=f"metodo_abono_{d_id}")
                 
                 if st.button("✅ Procesar Abono", key=f"btn_abono_{d_id}", type="primary"):
                     cursor = conn.cursor()
                     nuevo_bal = round(saldo_usd - monto_abono, 2)
-                    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ahora_exacto = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
                     if nuevo_bal < 0.01:
                         cursor.execute("DELETE FROM deudas WHERE id = ?", (d_id,))
                     else:
-                        cursor.execute("UPDATE deudas SET saldo_pendiente = ?, ultima_actualizacion = ? WHERE id = ?", (nuevo_bal, ahora, d_id))
+                        cursor.execute("UPDATE deudas SET saldo_pendiente = ?, ultima_actualizacion = ? WHERE id = ?", (nuevo_bal, ahora_exacto, d_id))
                     
-                    m_u = monto_abono if metodo_abono == "Efectivo (Divisa/USD)" else 0.0
-                    m_b = (monto_abono * tasa_dolar) if metodo_abono == "Efectivo (Bolívares)" else 0.0
-                    m_pm = (monto_abono * tasa_dolar) if metodo_abono == "Pago Móvil / Transferencia" else 0.0
-                    m_ptv = (monto_abono * tasa_dolar * 0.98) if metodo_abono == "Punto de Venta (Tarjeta)" else 0.0
-                    ing_caja = monto_abono if metodo_abono != "Punto de Venta (Tarjeta)" else monto_abono * 0.98
+                    m_ef_usd = monto_abono if metodo_pago_abono == "Efectivo (Divisa/USD)" else 0.0
+                    m_ef_bs = (monto_abono * tasa_dolar) if metodo_pago_abono == "Efectivo (Bolívares)" else 0.0
+                    m_pm = (monto_abono * tasa_dolar) if metodo_pago_abono == "Pago Móvil / Transferencia" else 0.0
+                    m_ptv = (monto_abono * tasa_dolar * 0.98) if metodo_pago_abono == "Punto de Venta (Tarjeta)" else 0.0
+                    monto_ingreso_caja = monto_abono if metodo_pago_abono != "Punto de Venta (Tarjeta)" else monto_abono * 0.98
+                        
+                    cursor.execute("""INSERT INTO ventas_maestro 
+                        (fecha, subtotal, impuesto, total, metodo_pago, cliente, monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (ahora_exacto, monto_abono, 0.0, monto_ingreso_caja, f"Abono - {metodo_pago_abono}", f"Abono Deuda - {cliente_actual}", m_ef_usd, m_ef_bs, m_pm, m_ptv))
                     
-                    cursor.execute("INSERT INTO ventas_maestro (fecha, subtotal, impuesto, total, metodo_pago, cliente, monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
-                                   (ahora, monto_abono, ing_caja, f"Abono - {metodo_abono}", f"Abono Deuda - {cliente_actual}", m_u, m_b, m_pm, m_ptv))
                     conn.commit()
                     st.success("✅ Abono procesado con éxito.")
                     st.rerun()
     else:
-        st.success("🎉 ¡Todos al día!")
+        st.success("🎉 ¡Todos los clientes están al día!")
 
 # ==========================================
 # MÓDULO: DASHBOARD Y CIERRE
