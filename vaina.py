@@ -89,6 +89,7 @@ def conectar_db():
     return conn
 
 def parse_float(val, default=0.0):
+    """Conversor inteligente para aceptar puntos y comas en los inputs de texto"""
     if val is None:
         return default
     if isinstance(val, (int, float)):
@@ -103,6 +104,7 @@ def inicializar_db():
     conn = conectar_db()
     cursor = conn.cursor()
     
+    # Tablas principales
     cursor.execute('''CREATE TABLE IF NOT EXISTS cierres_diarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
         fecha TEXT, 
@@ -134,8 +136,7 @@ def inicializar_db():
         monto_efectivo_usd REAL DEFAULT 0,
         monto_efectivo_bs REAL DEFAULT 0,
         monto_pago_movil REAL DEFAULT 0,
-        monto_punto REAL DEFAULT 0,
-        deuda_id INTEGER DEFAULT NULL
+        monto_punto REAL DEFAULT 0
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS ventas_detalle (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -233,7 +234,6 @@ def migracion_segura_db():
         ("ventas_maestro", "monto_efectivo_bs", "REAL DEFAULT 0"),
         ("ventas_maestro", "monto_pago_movil", "REAL DEFAULT 0"),
         ("ventas_maestro", "monto_punto", "REAL DEFAULT 0"),
-        ("ventas_maestro", "deuda_id", "INTEGER DEFAULT NULL"),
         ("productos", "unidades_por_caja", "REAL DEFAULT 1"),
         ("productos", "es_cigarrillo", "INTEGER DEFAULT 0"),
         ("productos", "porcentaje_ganancia", "REAL DEFAULT 0"),
@@ -272,6 +272,7 @@ def guardar_tasa_actual(nueva_tasa):
         conn.commit()
     obtener_tasa_actual.clear()
 
+# --- OPTIMIZACIÓN: INICIALIZACIÓN ÚNICA POR SESIÓN ---
 if 'db_inicializada' not in st.session_state:
     inicializar_db()
     migracion_segura_db()
@@ -280,7 +281,9 @@ if 'db_inicializada' not in st.session_state:
 if 'carrito' not in st.session_state:
     st.session_state.carrito = []
 
-# --- ENCABEZADO SUPERIOR MÓVIL ---
+# =========================================================================
+# --- ENCABEZADO SUPERIOR MÓVIL (VISIBLE DIRECTAMENTE EN LA PARTE ALTA) ---
+# =========================================================================
 st.markdown("### 🏛️ Punto Yali - ERP")
 
 col_tasa_m, col_mod_m = st.columns([1, 2])
@@ -304,6 +307,7 @@ with col_mod_m:
     modulo = st.selectbox("📌 ¿Qué deseas hacer?", modulos_lista, label_visibility="visible")
 
 st.markdown("---")
+
 conn = conectar_db()
 
 # ==========================================
@@ -311,54 +315,68 @@ conn = conectar_db()
 # ==========================================
 if modulo == "🛠️ Mantenimiento de Sistema":
     st.title("🛠️ Mantenimiento del Sistema")
+    st.caption("Herramientas de control administrativo y corrección de registros.")
+    
     tab_borrado, tab_limpieza = st.tabs(["🎯 Borrado Quirúrgico", "🧹 Reseteo Total"])
     
     with tab_borrado:
         st.subheader("Eliminar Registros Específicos")
+        st.write("Selecciona y elimina transacciones erróneas o deudas fantasma de forma directa.")
+        
         col1, col2 = st.columns(2)
+        
         with col1:
             st.markdown("#### 1️⃣ Venta o Abono")
             df_ventas_err = pd.read_sql_query("SELECT id, fecha, metodo_pago, total, cliente FROM ventas_maestro ORDER BY id DESC LIMIT 20", conn)
+            
             if not df_ventas_err.empty:
                 st.dataframe(df_ventas_err, use_container_width=True, hide_index=True)
                 id_venta_del = st.selectbox("ID de la Venta/Abono a borrar:", df_ventas_err['id'].tolist())
+                
                 if st.button("🗑️ Borrar Venta Seleccionada", type="primary"):
                     cursor = conn.cursor()
                     cursor.execute("DELETE FROM ventas_detalle WHERE venta_id=?", (int(id_venta_del),))
                     cursor.execute("DELETE FROM ventas_maestro WHERE id=?", (int(id_venta_del),))
                     conn.commit()
-                    st.success(f"Venta/Abono {id_venta_del} eliminado.")
+                    st.success(f"Venta/Abono {id_venta_del} eliminado con éxito.")
                     st.rerun()
             else:
-                st.info("No hay ventas.")
+                st.info("No hay ventas registradas recientemente.")
                 
         with col2:
             st.markdown("#### 2️⃣ Deuda / Fiado")
             df_deudas_err = pd.read_sql_query("SELECT id, cliente, monto_total, saldo_pendiente FROM deudas ORDER BY id DESC", conn)
+            
             if not df_deudas_err.empty:
                 st.dataframe(df_deudas_err, use_container_width=True, hide_index=True)
                 id_deuda_del = st.selectbox("ID de la Deuda a borrar:", df_deudas_err['id'].tolist())
+                
                 if st.button("🗑️ Borrar Deuda Seleccionada", type="primary"):
                     cursor = conn.cursor()
                     cursor.execute("DELETE FROM deudas WHERE id=?", (int(id_deuda_del),))
                     conn.commit()
-                    st.success(f"Deuda {id_deuda_del} eliminada.")
+                    st.success(f"Deuda {id_deuda_del} eliminada del registro.")
                     st.rerun()
             else:
-                st.info("No hay deudas.")
+                st.info("No hay deudas registradas actualmente.")
 
     with tab_limpieza:
-        st.warning("⚠️ Borra todos los movimientos financieros, ventas, egresos y deudas. El inventario se mantiene.")
-        confirmar_limpieza = st.checkbox("Entiendo y deseo borrar TODOS los movimientos financieros permanentemente.")
+        st.warning("⚠️ **¡Atención!** Esta sección borra todos los movimientos financieros, ventas, egresos y deudas de golpe. El inventario de productos se mantiene intacto.")
+        confirmar_limpieza = st.checkbox("Entiendo las consecuencias y deseo borrar TODOS los movimientos financieros permanentemente.")
+        
         if st.button("🚨 BORRAR MOVIMIENTOS FINANCIEROS", disabled=not confirmar_limpieza, type="primary"):
             cursor = conn.cursor()
-            for tabla in ['ventas_maestro', 'ventas_detalle', 'egresos_maestro', 'egresos_detalle', 'deudas', 'historial_inventario', 'notas_generales', 'cierres_diarios', 'movimientos_capital', 'prestamos_personales']:
+            tablas_a_limpiar = [
+                'ventas_maestro', 'ventas_detalle', 'egresos_maestro', 
+                'egresos_detalle', 'deudas', 'historial_inventario', 'notas_generales', 'cierres_diarios', 'movimientos_capital', 'prestamos_personales'
+            ]
+            for tabla in tablas_a_limpiar:
                 try:
                     cursor.execute(f"DELETE FROM {tabla}")
                 except Exception:
                     pass
             conn.commit()
-            st.success("✅ Sistema limpiado.")
+            st.success("✅ Sistema limpiado por completo.")
             st.balloons()
 
 # ==========================================
@@ -366,7 +384,12 @@ if modulo == "🛠️ Mantenimiento de Sistema":
 # ==========================================
 elif modulo == "📦 Inventario y Productos":
     st.title("📦 Centro de Control de Inventario")
-    tab_inv, tab_nuevo, tab_cat, tab_pizarra, tab_hist = st.tabs(["📋 Existencias", "➕ Nuevo", "📁 Categorías", "📝 Pizarra", "📜 Auditoría"])
+    st.caption("Gestión ágil de existencias, precios y creación de artículos.")
+    
+    tab_inv, tab_nuevo, tab_cat, tab_pizarra, tab_hist = st.tabs([
+        "📋 Existencias", "➕ Nuevo", "📁 Categorías", "📝 Pizarra", "📜 Auditoría"
+    ])
+    
     lista_cats_db = pd.read_sql_query("SELECT nombre FROM categorias", conn)['nombre'].tolist()
     
     with tab_inv:
@@ -374,7 +397,7 @@ elif modulo == "📦 Inventario y Productos":
         with col_f1:
             cat_filtro = st.selectbox("🔍 Categoría:", ["Todas las Categorías"] + lista_cats_db)
         with col_f2:
-            busq_texto = st.text_input("🔎 Buscar:", placeholder="Nombre...")
+            busq_texto = st.text_input("🔎 Buscar:", placeholder="Nombre del artículo...")
         
         query_inv = "SELECT * FROM productos WHERE 1=1"
         params_inv = []
@@ -386,107 +409,157 @@ elif modulo == "📦 Inventario y Productos":
             params_inv.append(f"%{busq_texto}%")
             
         df_prod = pd.read_sql_query(query_inv, conn, params=tuple(params_inv))
+            
         st.markdown("---")
         
         if not df_prod.empty:
             ITEMS_POR_PAGINA = 10
             total_productos = len(df_prod)
             paginas_totales = (total_productos - 1) // ITEMS_POR_PAGINA + 1
-            pagina_actual = st.selectbox("📄 Página:", range(1, paginas_totales + 1), format_func=lambda x: f"Página {x} de {paginas_totales}") if paginas_totales > 1 else 1
+            
+            if paginas_totales > 1:
+                pagina_actual = st.selectbox("📄 Página:", range(1, paginas_totales + 1), format_func=lambda x: f"Página {x} de {paginas_totales}")
+            else:
+                pagina_actual = 1
             
             inicio = (pagina_actual - 1) * ITEMS_POR_PAGINA
-            df_pagina = df_prod.iloc[inicio:inicio + ITEMS_POR_PAGINA]
+            fin = inicio + ITEMS_POR_PAGINA
+            df_pagina = df_prod.iloc[inicio:fin]
             
             for _, prod in df_pagina.iterrows():
-                p_id, p_nombre, p_cat, p_costo = int(prod['id']), prod['nombre'], prod['categoria'], float(prod['costo_insumo'])
+                p_id = int(prod['id'])
+                p_nombre = prod['nombre']
+                p_cat = prod['categoria']
+                p_costo = float(prod['costo_insumo'])
                 p_ganancia = float(prod.get('porcentaje_ganancia', 40.0))
                 p_iva = int(prod.get('aplica_iva', 0)) == 1
-                p_stock, p_precio = float(prod['stock']), float(prod['precio_venta'])
+                p_stock = float(prod['stock'])
+                p_precio = float(prod['precio_venta'])
                 p_obs = str(prod['observaciones'] or '')
                 p_es_cig = int(prod.get('es_cigarrillo', 0)) == 1
                 p_u_caja = float(prod.get('unidades_por_caja', 1.0))
+                
                 estado_txt = "🔴 Crítico" if p_stock <= 3 else ("🟡 Bajo" if p_stock <= 10 else "🟢 Normal")
+                
+                info_extra_str = ""
+                if p_es_cig and p_u_caja > 0:
+                    p_unit_suelto = p_precio / p_u_caja
+                    info_extra_str = f" | 🚬 Suelto: **${p_unit_suelto:.3f}**"
                 
                 with st.expander(f"📦 **{p_nombre}** | Stock: **{p_stock:.1f} U** ({estado_txt}) | **${p_precio:.2f}**"):
                     with st.form(f"form_edit_{p_id}"):
                         c1, c2 = st.columns(2)
                         with c1:
-                            e_nombre = st.text_input("Nombre", value=p_nombre, key=f"nom_{p_id}")
+                            e_nombre = st.text_input("Nombre del Artículo", value=p_nombre, key=f"nom_{p_id}")
                             e_cat = st.selectbox("Categoría", lista_cats_db, index=lista_cats_db.index(p_cat) if p_cat in lista_cats_db else 0, key=f"cat_{p_id}")
-                            e_costo = parse_float(st.text_input("Costo Base ($)", value=str(p_costo), key=f"costo_{p_id}"))
-                            e_ganancia = parse_float(st.text_input("Ganancia (%)", value=str(p_ganancia), key=f"gan_{p_id}"))
+                            
+                            e_costo_str = st.text_input("Costo Base ($)", value=str(p_costo), key=f"costo_{p_id}")
+                            e_ganancia_str = st.text_input("Ganancia (%)", value=str(p_ganancia), key=f"gan_{p_id}")
                             e_iva = st.checkbox("🏛️ ¿Aplica IVA (16%)?", value=p_iva, key=f"iva_{p_id}")
+                            
+                            e_costo = parse_float(e_costo_str, p_costo)
+                            e_ganancia = parse_float(e_ganancia_str, p_ganancia)
                             
                             m_dec = e_ganancia / 100
                             div = 1.0 - m_dec if m_dec < 1.0 else 0.01
                             p_sin_i = e_costo / div if div > 0 else e_costo
                             e_pv = p_sin_i * 1.16 if e_iva else p_sin_i
                             st.info(f"💵 **Venta Calc:** ${e_pv:.2f}")
+                            
                         with c2:
-                            e_stock = parse_float(st.text_input("Stock Actual", value=str(p_stock), key=f"stk_{p_id}"))
-                            e_motivo = st.text_input("Motivo ajuste", placeholder="Ej: Conteo...", key=f"mot_{p_id}")
+                            e_stock_str = st.text_input("Stock Actual", value=str(p_stock), key=f"stk_{p_id}")
+                            e_motivo = st.text_input("Motivo de ajuste", placeholder="Ej: Conteo físico...", key=f"mot_{p_id}")
                             e_es_cig = st.checkbox("📦 Caja / Detallado", value=p_es_cig, key=f"cig_{p_id}")
-                            e_u_caja = parse_float(st.text_input("Unidades caja", value=str(p_u_caja), key=f"ucaj_{p_id}"))
+                            e_u_caja_str = st.text_input("Unidades por caja", value=str(p_u_caja), key=f"ucaj_{p_id}")
+                            
+                            e_stock = parse_float(e_stock_str, p_stock)
+                            e_u_caja = parse_float(e_u_caja_str, p_u_caja)
                             e_obs = st.text_area("Observaciones", value=p_obs, key=f"obs_{p_id}")
                             
-                        if st.form_submit_button("💾 Guardar Cambios", type="primary"):
+                        guardar_cambio = st.form_submit_button("💾 Guardar Cambios de este Artículo", type="primary")
+                        
+                        if guardar_cambio:
                             cursor = conn.cursor()
-                            cursor.execute("""UPDATE productos SET nombre=?, categoria=?, precio_venta=?, costo_insumo=?, porcentaje_ganancia=?, aplica_iva=?, stock=?, unidades_por_caja=?, es_cigarrillo=?, observaciones=? WHERE id=?""",
-                                           (e_nombre, e_cat, round(e_pv, 2), e_costo, e_ganancia, 1 if e_iva else 0, e_stock, e_u_caja, 1 if e_es_cig else 0, e_obs, p_id))
+                            v_cig = 1 if e_es_cig else 0
+                            v_iva = 1 if e_iva else 0
+                            
+                            cursor.execute("""UPDATE productos SET 
+                                nombre=?, categoria=?, precio_venta=?, costo_insumo=?, porcentaje_ganancia=?, aplica_iva=?, stock=?, unidades_por_caja=?, es_cigarrillo=?, observaciones=? 
+                                WHERE id=?""",
+                                (e_nombre, e_cat, round(e_pv, 2), e_costo, e_ganancia, v_iva, e_stock, e_u_caja, v_cig, e_obs, p_id))
+                            
                             if p_stock != e_stock:
                                 cursor.execute("INSERT INTO historial_inventario (producto_id, producto_nombre, fecha, stock_anterior, stock_nuevo, motivo) VALUES (?, ?, ?, ?, ?, ?)",
-                                               (p_id, e_nombre, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), p_stock, e_stock, e_motivo or "Ajuste"))
+                                               (p_id, e_nombre, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), p_stock, e_stock, e_motivo if e_motivo else "Ajuste rápido"))
                             conn.commit()
-                            st.success("✔️ Actualizado.")
+                            st.success(f"✔️ Actualizado con éxito.")
                             st.rerun()
 
-                    if st.checkbox(f"⚠️ Eliminar '{p_nombre}'", key=f"chk_del_{p_id}"):
-                        if st.button(f"🗑️ Confirmar Eliminación", key=f"btn_del_{p_id}", type="primary"):
+                    confirmar_del = st.checkbox(f"⚠️ Activar opción para eliminar '{p_nombre}'", key=f"chk_del_{p_id}")
+                    if confirmar_del:
+                        if st.button(f"🗑️ ELIMINAR ESTE PRODUCTO", key=f"btn_del_{p_id}", type="primary"):
                             cursor = conn.cursor()
                             cursor.execute("DELETE FROM productos WHERE id = ?", (p_id,))
                             cursor.execute("DELETE FROM historial_inventario WHERE producto_id = ?", (p_id,))
                             conn.commit()
-                            st.error("💥 Eliminado.")
+                            st.error(f"💥 Producto eliminado.")
                             st.rerun()
         else:
-            st.info("Sin productos.")
+            st.info("No se encontraron productos.")
 
     with tab_nuevo:
-        st.subheader("➕ Nuevo Producto")
+        st.subheader("➕ Registrar Nuevo Producto")
         with st.form("form_nuevo_prod_seguro"):
-            c1, c2 = st.columns(2)
-            with c1:
-                nombre_n = st.text_input("Nombre")
-                categoria_n = st.selectbox("Categoría", lista_cats_db or ["Otros"], key="cat_nuevo")
-                costo_n = parse_float(st.text_input("Costo Base ($)", value="0.00", key="costo_nuevo"))
-                ganancia_n = parse_float(st.text_input("Ganancia (%)", value="40.00", key="gan_nuevo"))
+            col1, col2 = st.columns(2)
+            with col1:
+                nombre_n = st.text_input("Nombre del Artículo")
+                categoria_n = st.selectbox("Categoría", lista_cats_db if lista_cats_db else ["Otros"], key="cat_nuevo")
+                
+                costo_str_n = st.text_input("Costo Base ($)", value="0.00", key="costo_nuevo")
+                ganancia_str_n = st.text_input("Ganancia (%)", value="40.00", key="gan_nuevo")
                 iva_n = st.checkbox("🏛️ ¿Aplica IVA (16%)?", key="iva_nuevo")
                 
-                div_n = 1.0 - (ganancia_n / 100) if (ganancia_n / 100) < 1.0 else 0.01
+                costo_n = parse_float(costo_str_n)
+                ganancia_n = parse_float(ganancia_str_n, 40.0)
+                
+                m_dec_n = ganancia_n / 100
+                div_n = 1.0 - m_dec_n if m_dec_n < 1.0 else 0.01
                 p_sin_iva_n = costo_n / div_n if div_n > 0 else costo_n
                 precio_v_n = p_sin_iva_n * 1.16 if iva_n else p_sin_iva_n
+                
                 st.info(f"💵 **Precio Venta:** ${precio_v_n:.2f}")
-            with c2:
-                stock_n = parse_float(st.text_input("Stock Inicial", value="0", key="stock_nuevo"))
-                obs_n = st.text_area("Observaciones", key="obs_nuevo")
-                es_cig_n = st.checkbox("📦 ¿Se vende caja y suelto?", key="cig_nuevo")
-                u_caja_n = parse_float(st.text_input("Unidades en caja", value="20", key="ucaj_nuevo"))
+
+            with col2:
+                stock_str_n = st.text_input("Stock Inicial", value="0", key="stock_nuevo")
+                obs_n = st.text_area("Observaciones", placeholder="Detalles...", key="obs_nuevo")
+                stock_n = parse_float(stock_str_n)
+                
+                st.markdown("---")
+                es_cig_n = st.checkbox("📦 ¿Se vende por caja y suelto?", key="cig_nuevo")
+                u_caja_str_n = st.text_input("Unidades en caja", value="20", key="ucaj_nuevo")
+                u_caja_n = parse_float(u_caja_str_n, 20.0)
             
-            if st.form_submit_button("💾 Guardar Producto", type="primary"):
+            if st.form_submit_button("💾 Guardar Nuevo Producto", type="primary"):
                 if nombre_n:
                     try:
                         cursor = conn.cursor()
-                        cursor.execute("""INSERT INTO productos (nombre, categoria, precio_venta, costo_insumo, porcentaje_ganancia, aplica_iva, stock, unidades_por_caja, es_cigarrillo, observaciones) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                       (nombre_n, categoria_n, round(precio_v_n, 2), costo_n, ganancia_n, 1 if iva_n else 0, stock_n, u_caja_n, 1 if es_cig_n else 0, obs_n))
+                        val_cig = 1 if es_cig_n else 0
+                        val_iva = 1 if iva_n else 0
+                        
+                        cursor.execute("""INSERT INTO productos 
+                            (nombre, categoria, precio_venta, costo_insumo, porcentaje_ganancia, aplica_iva, stock, unidades_por_caja, es_cigarrillo, observaciones) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (nombre_n, categoria_n, round(precio_v_n, 2), costo_n, ganancia_n, val_iva, stock_n, u_caja_n, val_cig, obs_n))
+                        
                         cursor.execute("INSERT INTO historial_inventario (producto_id, producto_nombre, fecha, stock_anterior, stock_nuevo, motivo) VALUES (?, ?, ?, ?, ?, ?)",
                                        (cursor.lastrowid, nombre_n, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0.0, stock_n, "Ingreso Inicial"))
                         conn.commit()
-                        st.success("✔️ Registrado.")
+                        st.success("✔️ Producto registrado correctamente.")
                         st.rerun()
                     except Exception:
                         st.error("❌ Ya existe un producto con ese nombre.")
                 else:
-                    st.warning("⚠️ Ingresa un nombre.")
+                    st.warning("⚠️ Debes asignar un nombre.")
 
     with tab_cat:
         with st.form("form_cat"):
@@ -501,27 +574,30 @@ elif modulo == "📦 Inventario y Productos":
                         st.rerun()
                     except Exception:
                         st.error("Ya existe.")
+        st.markdown("**Categorías Activas:**")
         for cat in lista_cats_db:
             st.markdown(f"- 🏷️ {cat}")
 
     with tab_pizarra:
-        nota_texto = st.text_area("Nueva nota:")
+        nota_texto = st.text_area("Nueva nota:", placeholder="Recordatorio...")
         if st.button("📌 Publicar Nota"):
             if nota_texto:
                 cursor = conn.cursor()
                 cursor.execute("INSERT INTO notas_generales (fecha, nota) VALUES (?, ?)", (datetime.now().strftime("%Y-%m-%d %H:%M"), nota_texto))
                 conn.commit()
                 st.rerun()
+        
         df_notas = pd.read_sql_query("SELECT id, fecha, nota FROM notas_generales ORDER BY id DESC", conn)
-        for _, row in df_notas.iterrows():
-            with st.container(border=True):
-                st.caption(f"🗓️ {row['fecha']}")
-                st.write(row['nota'])
-                if st.button("🗑️ Borrar", key=f"del_nota_{row['id']}"):
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM notas_generales WHERE id=?", (row['id'],))
-                    conn.commit()
-                    st.rerun()
+        if not df_notas.empty:
+            for _, row in df_notas.iterrows():
+                with st.container(border=True):
+                    st.caption(f"🗓️ {row['fecha']}")
+                    st.write(row['nota'])
+                    if st.button("🗑️ Borrar", key=f"del_nota_{row['id']}"):
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM notas_generales WHERE id=?", (row['id'],))
+                        conn.commit()
+                        st.rerun()
 
     with tab_hist:
         df_hist = pd.read_sql_query("SELECT fecha as 'Fecha', producto_nombre as 'Producto', stock_anterior as 'Antes', stock_nuevo as 'Nuevo', motivo as 'Motivo' FROM historial_inventario ORDER BY id DESC", conn)
@@ -532,21 +608,25 @@ elif modulo == "📦 Inventario y Productos":
 # ==========================================
 elif modulo == "🛒 Registrar Venta (Punto de Venta)":
     st.title("🛒 Punto de Venta (POS)")
+    st.caption("Facturación rápida y control automático de caja.")
+    
     df_prod = pd.read_sql_query("SELECT * FROM productos", conn)
     
     if df_prod.empty:
-        st.warning("Inventario vacío.")
+        st.warning("El inventario está vacío.")
     else:
         with st.container(border=True):
-            prod_nombre = st.selectbox("Producto", df_prod['nombre'].tolist())
+            prod_nombre = st.selectbox("Seleccionar Producto", df_prod['nombre'].tolist())
             info_p = df_prod[df_prod['nombre'] == prod_nombre].iloc[0]
-            stock_actual, es_cigarrillo = float(info_p['stock']), int(info_p['es_cigarrillo'] or 0)
-            u_caja = float(info_p['unidades_por_caja'] or 1.0)
+            stock_actual = float(info_p['stock'])
+            es_cigarrillo = int(info_p['es_cigarrillo'] if info_p['es_cigarrillo'] else 0)
+            u_caja = float(info_p['unidades_por_caja'] if info_p['unidades_por_caja'] else 1.0)
             
             if es_cigarrillo == 1:
                 opcion_empaque = st.radio("Empaque", ["Unidad/Suelto", "Caja Cerrada"], horizontal=True)
                 if opcion_empaque == "Unidad/Suelto" and u_caja > 0:
-                    st.caption(f"Stock: {stock_actual:.1f} U | C/U: ${float(info_p['precio_venta']) / u_caja:.3f}")
+                    precio_unit_calc = float(info_p['precio_venta']) / u_caja
+                    st.caption(f"Stock: {stock_actual:.1f} U | C/U: ${precio_unit_calc:.3f}")
                 else:
                     st.caption(f"Stock: {stock_actual:.1f} U")
             else:
@@ -555,7 +635,7 @@ elif modulo == "🛒 Registrar Venta (Punto de Venta)":
             
             precio_defecto_usd = float(info_p['precio_venta'])
             if st.checkbox("Precio Manual"):
-                precio_manual_bs = st.number_input("Precio Bs.", min_value=0.0, value=round(precio_defecto_usd * tasa_dolar, 2))
+                precio_manual_bs = st.number_input("Precio en Bs.", min_value=0.0, value=round(precio_defecto_usd * tasa_dolar, 2))
                 precio_final = precio_manual_bs / tasa_dolar if tasa_dolar > 0 else 0.0
             else:
                 precio_final = precio_defecto_usd
@@ -564,17 +644,27 @@ elif modulo == "🛒 Registrar Venta (Punto de Venta)":
             cant_vender = st.number_input("Cantidad", min_value=1, value=1, step=1)
             
             if st.button("➕ Agregar al Carrito", type="primary"):
-                if es_cigarrillo == 1 and opcion_empaque == "Caja Cerrada":
-                    factor_stock, precio_ajustado, nombre_carrito = u_caja, precio_final, prod_nombre
-                elif es_cigarrillo == 1:
-                    factor_stock, precio_ajustado, nombre_carrito = 1.0, (precio_final / u_caja if u_caja > 0 else precio_final), f"{prod_nombre} (Suelto)"
+                if es_cigarrillo == 1:
+                    if opcion_empaque == "Caja Cerrada":
+                        factor_stock = u_caja
+                        precio_ajustado = precio_final
+                        nombre_carrito = prod_nombre
+                    else:
+                        factor_stock = 1.0
+                        precio_ajustado = precio_final / u_caja if u_caja > 0 else precio_final
+                        nombre_carrito = f"{prod_nombre} (Suelto)"
                 else:
-                    factor_stock, precio_ajustado, nombre_carrito = 1.0, precio_final, prod_nombre
+                    factor_stock = 1.0
+                    precio_ajustado = precio_final
+                    nombre_carrito = prod_nombre
                     
                 st.session_state.carrito.append({
-                    'id': int(info_p['id']), 'nombre': nombre_carrito, 
+                    'id': int(info_p['id']), 
+                    'nombre': nombre_carrito, 
                     'unidades_stock': cant_vender * factor_stock,
-                    'cantidad_pantalla': cant_vender, 'precio_u': precio_ajustado, 'subtotal': cant_vender * precio_ajustado
+                    'cantidad_pantalla': cant_vender, 
+                    'precio_u': precio_ajustado, 
+                    'subtotal': cant_vender * precio_ajustado
                 })
                 st.success("¡Agregado!")
                 st.rerun()
@@ -582,159 +672,243 @@ elif modulo == "🛒 Registrar Venta (Punto de Venta)":
         if st.session_state.carrito:
             st.markdown("---")
             st.markdown("### 🛍️ Carrito Actual")
+            
             carrito_actualizado = []
             for i, item in enumerate(st.session_state.carrito):
                 with st.container(border=True):
-                    st.markdown(f"**{item['nombre']}** — ${item['precio_u']:.3f} c/u")
+                    st.markdown(f"**{item['nombre']}**")
+                    p_u_usd = item['precio_u']
+                    p_u_bs = p_u_usd * tasa_dolar
+                    st.caption(f"Unitario: ${p_u_usd:.3f} ({p_u_bs:.2f} Bs.)")
+                    
                     nueva_cant = st.number_input("Cantidad", min_value=1, value=int(item['cantidad_pantalla']), key=f"cant_item_{i}")
                     sub_usd = nueva_cant * item['precio_u']
-                    st.write(f"**Subtotal:** ${sub_usd:.2f} *({sub_usd * tasa_dolar:.2f} Bs.)*")
-                    if not st.button("🗑️ Quitar", key=f"del_item_{i}"):
-                        factor_u = item['unidades_stock'] / item['cantidad_pantalla'] if item['cantidad_pantalla'] > 0 else 1.0
+                    sub_bs = sub_usd * tasa_dolar
+                    st.write(f"**Subtotal:** ${sub_usd:.2f} *({sub_bs:.2f} Bs.)*")
+                    
+                    eliminar = st.button("🗑️ Quitar artículo", key=f"del_item_{i}")
+                    
+                    if not eliminar:
+                        factor_unitario = item['unidades_stock'] / item['cantidad_pantalla'] if item['cantidad_pantalla'] > 0 else 1.0
                         item_modificado = item.copy()
                         item_modificado['cantidad_pantalla'] = nueva_cant
-                        item_modificado['unidades_stock'] = nueva_cant * factor_u
+                        item_modificado['unidades_stock'] = nueva_cant * factor_unitario
                         item_modificado['subtotal'] = sub_usd
                         carrito_actualizado.append(item_modificado)
+            
             st.session_state.carrito = carrito_actualizado
             
             if st.session_state.carrito:
-                total_usd = sum([i['subtotal'] for i in st.session_state.carrito])
+                df_cart_calc = pd.DataFrame(st.session_state.carrito)
+                total_usd = df_cart_calc['subtotal'].sum()
+                total_bs = total_usd * tasa_dolar
+                
                 st.markdown("---")
                 col_usd, col_bs = st.columns(2)
                 col_usd.metric("TOTAL NETO", f"${total_usd:.2f}")
-                col_bs.metric("TOTAL BS", f"{total_usd * tasa_dolar:.2f} Bs.")
+                col_bs.metric("TOTAL BS", f"{total_bs:.2f} Bs.")
                 
                 with st.container(border=True):
                     st.subheader("💳 Cierre Financiero")
                     pago_mixto = st.checkbox("🔀 Pago fraccionado / mixto")
-                    bloquear_reg = False
-                    cliente_name = ""
+                    vuelto_usd = 0.0
+                    vuelto_bs = 0.0
                     
                     if not pago_mixto:
                         metodo_pago = st.selectbox("Método de Pago", ["Efectivo (Divisa/USD)", "Efectivo (Bolívares)", "Pago Móvil / Transferencia", "Punto de Venta (Tarjeta)", "Fiado (Crédito)", "Consumo Interno"])
+                        
                         if metodo_pago == "Fiado (Crédito)":
-                            lista_deudores = pd.read_sql_query("SELECT DISTINCT cliente FROM deudas WHERE saldo_pendiente >= 0.01", conn)['cliente'].tolist()
-                            sel_deudor = st.selectbox("Deudor", ["-- Seleccionar --", "➕ Registrar Nuevo"] + lista_deudores)
-                            if sel_deudor == "➕ Registrar Nuevo":
+                            df_deudores_activos = pd.read_sql_query("SELECT DISTINCT cliente FROM deudas WHERE saldo_pendiente >= 0.01", conn)
+                            lista_deudores_activos = df_deudores_activos['cliente'].tolist() if not df_deudores_activos.empty else []
+                            
+                            opciones_deudor = ["-- Seleccionar deudor --", "➕ Registrar Nuevo Deudor"] + lista_deudores_activos
+                            sel_deudor_pos = st.selectbox("Seleccionar Deudor", opciones_deudor)
+                            
+                            if sel_deudor_pos == "➕ Registrar Nuevo Deudor":
                                 cliente_name = st.text_input("Nombre del nuevo deudor:")
-                            elif sel_deudor != "-- Seleccionar --":
-                                cliente_name = sel_deudor
+                            elif sel_deudor_pos == "-- Seleccionar deudor --":
+                                cliente_name = ""
+                            else:
+                                cliente_name = sel_deudor_pos
                         elif metodo_pago == "Punto de Venta (Tarjeta)":
-                            cliente_name = st.text_input("Referencia / Tarjeta")
+                            cliente_name = st.text_input("Cliente / Referencia")
+                        else:
+                            cliente_name = ""
                         
                         m_ef_usd = total_usd if metodo_pago == "Efectivo (Divisa/USD)" else 0.0
-                        m_ef_bs = (total_usd * tasa_dolar) if metodo_pago == "Efectivo (Bolívares)" else 0.0
-                        m_pm = (total_usd * tasa_dolar) if metodo_pago == "Pago Móvil / Transferencia" else 0.0
-                        m_ptv = (total_usd * tasa_dolar * 0.98) if metodo_pago == "Punto de Venta (Tarjeta)" else 0.0
-                        monto_ingreso_caja = total_usd if metodo_pago != "Punto de Venta (Tarjeta)" else total_usd * 0.98
+                        m_ef_bs = total_bs if metodo_pago == "Efectivo (Bolívares)" else 0.0
+                        m_pm = total_bs if metodo_pago == "Pago Móvil / Transferencia" else 0.0
+                        m_ptv = total_bs * 0.98 if metodo_pago == "Punto de Venta (Tarjeta)" else 0.0
                         
+                        if metodo_pago == "Efectivo (Divisa/USD)":
+                            monto_recibido_usd = st.number_input("💵 Recibido en Efectivo USD ($)", min_value=float(round(total_usd, 2)), value=float(round(total_usd, 2)))
+                            vuelto_usd = round(monto_recibido_usd - total_usd, 2)
+                            vuelto_bs = round(vuelto_usd * tasa_dolar, 2)
+                            st.info(f"💵 **VUELTO:** ${vuelto_usd:.2f} *({vuelto_bs:.2f} Bs.)*")
+                            
+                        elif metodo_pago == "Efectivo (Bolívares)":
+                            monto_recibido_bs = st.number_input("💵 Recibido en Efectivo Bs.", min_value=float(round(total_bs, 2)), value=float(round(total_bs, 2)))
+                            vuelto_bs = round(monto_recibido_bs - total_bs, 2)
+                            vuelto_usd = round(vuelto_bs / tasa_dolar, 2) if tasa_dolar > 0 else 0.0
+                            st.info(f"💵 **VUELTO:** {vuelto_bs:.2f} Bs. *(${vuelto_usd:.2f})*")
+
+                        monto_ingreso_caja = total_usd if metodo_pago != "Punto de Venta (Tarjeta)" else total_usd * 0.98
                         if metodo_pago in ["Consumo Interno", "Fiado (Crédito)"]:
                             monto_ingreso_caja = 0.0
                             m_ef_usd = m_ef_bs = m_pm = m_ptv = 0.0
                             
-                        metodo_final = metodo_pago
-                        if metodo_pago == "Fiado (Crédito)" and not cliente_name:
-                            st.warning("⚠️ Ingresa o selecciona un deudor.")
-                            bloquear_reg = True
-                    else:
-                        p_ef_usd = st.number_input("Efectivo USD", min_value=0.0, value=0.0, key="m_usd")
-                        p_ef_bs = st.number_input("Efectivo Bs", min_value=0.0, value=0.0, key="m_bs")
-                        p_pm = st.number_input("Pago Móvil", min_value=0.0, value=0.0, key="m_pm")
-                        p_ptv_neto = st.number_input("Punto Venta (Bruto)", min_value=0.0, value=0.0, key="m_ptv") * 0.98
+                        metodo_final_str = metodo_pago
+                        bloquear_registro = False
                         
-                        suma_usd = p_ef_usd + (p_ef_bs / tasa_dolar if tasa_dolar > 0 else 0) + (p_pm / tasa_dolar if tasa_dolar > 0 else 0) + (p_ptv_neto / tasa_dolar if tasa_dolar > 0 else 0)
-                        dif = round(suma_usd - total_usd, 2)
-                        if dif < -0.01:
-                            st.warning(f"⚠️ Faltan ${abs(dif):.2f}")
-                            bloquear_reg = True
+                        if metodo_pago == "Fiado (Crédito)" and not cliente_name:
+                            st.warning("⚠️ Debes seleccionar o registrar un deudor.")
+                            bloquear_registro = True
+                        
+                    else:
+                        p_ef_usd = st.number_input("Efectivo USD ($)", min_value=0.0, value=0.0, key="mix_ef_usd")
+                        p_ef_bs = st.number_input("Efectivo Bs.", min_value=0.0, value=0.0, key="mix_ef_bs")
+                        p_pm = st.number_input("Pago Móvil", min_value=0.0, value=0.0, key="mix_pm")
+                        p_ptv_bruto = st.number_input("Punto Venta", min_value=0.0, value=0.0, key="mix_ptv")
+                        
+                        p_ptv_neto = p_ptv_bruto * 0.98
+                        suma_parcial_usd = p_ef_usd + (p_ef_bs / tasa_dolar if tasa_dolar > 0 else 0) + (p_pm / tasa_dolar if tasa_dolar > 0 else 0) + (p_ptv_neto / tasa_dolar if tasa_dolar > 0 else 0)
+                        diferencia = round(suma_parcial_usd - total_usd, 2)
+                        
+                        if diferencia < -0.01:
+                            st.warning(f"⚠️ Faltan por distribuir **${abs(diferencia):.2f}**")
+                            bloquear_registro = True
+                        elif diferencia > 0.01:
+                            st.success(f"✅ VUELTO: ${diferencia:.2f}")
+                            bloquear_registro = False
                         else:
-                            st.success(f"✅ Montos correctos. Vuelto: ${max(0.0, dif):.2f}")
-                        m_ef_usd, m_ef_bs, m_pm, m_ptv = p_ef_usd, p_ef_bs, p_pm, p_ptv_neto
-                        monto_ingreso_caja, metodo_final, cliente_name = total_usd, "Pago Mixto", ""
+                            st.success("✅ ¡Montos exactos!")
+                            bloquear_registro = False
+                            
+                        cliente_name = ""
+                        m_ef_usd = p_ef_usd
+                        m_ef_bs = p_ef_bs
+                        m_pm = p_pm
+                        m_ptv = p_ptv_neto
+                        monto_ingreso_caja = total_usd if total_usd > 0 else 0.0
+                        metodo_final_str = "Pago Mixto"
 
-                    if st.button("🗑️ Cancelar"):
+                    if st.button("🗑️ Cancelar Venta"):
                         st.session_state.carrito = []
                         st.rerun()
                         
-                    if st.button("✅ Registrar Venta", type="primary", disabled=bloquear_reg):
+                    if st.button("✅ Registrar Venta", type="primary", disabled=bloquear_registro):
                         cursor = conn.cursor()
-                        ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        ahora_exacto = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        deuda_id = None
+                        cursor.execute("""INSERT INTO ventas_maestro 
+                            (fecha, subtotal, impuesto, total, metodo_pago, cliente, monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (ahora_exacto, total_usd, 0.0, monto_ingreso_caja, metodo_final_str, cliente_name, m_ef_usd, m_ef_bs, m_pm, m_ptv))
+                        venta_id = cursor.lastrowid
+                        
                         detalles_compra = ", ".join([f"{item['cantidad_pantalla']}x {item['nombre']}" for item in st.session_state.carrito])
                         
+                        for item in st.session_state.carrito:
+                            cursor.execute("INSERT INTO ventas_detalle (venta_id, producto_id, cantidad, precio_unitario, unidades_stock) VALUES (?, ?, ?, ?, ?)",
+                                           (venta_id, item['id'], item['cantidad_pantalla'], item['precio_u'], item['unidades_stock']))
+                            cursor.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (item['unidades_stock'], item['id']))
+                            
                         if not pago_mixto and metodo_pago == "Fiado (Crédito)":
                             cursor.execute("SELECT id, detalles FROM deudas WHERE cliente = ? AND saldo_pendiente >= 0.01", (cliente_name,))
-                            deuda_ex = cursor.fetchone()
-                            if deuda_ex:
-                                deuda_id = int(deuda_ex[0])
-                                nuevos_det = f"{deuda_ex[1]} | + {detalles_compra}" if deuda_ex[1] else detalles_compra
+                            deuda_existente = cursor.fetchone()
+                            
+                            if deuda_existente:
+                                nuevos_detalles = f"{deuda_existente[1]} | + {detalles_compra}" if deuda_existente[1] else detalles_compra
                                 cursor.execute("UPDATE deudas SET monto_total = monto_total + ?, saldo_pendiente = saldo_pendiente + ?, ultima_actualizacion = ?, detalles = ? WHERE id = ?",
-                                               (total_usd, total_usd, ahora, nuevos_det, deuda_id))
+                                               (total_usd, total_usd, ahora_exacto, nuevos_detalles, int(deuda_existente[0])))
                             else:
                                 cursor.execute("INSERT INTO deudas (cliente, monto_total, saldo_pendiente, fecha_origen, ultima_actualizacion, detalles) VALUES (?, ?, ?, ?, ?, ?)",
-                                               (cliente_name, total_usd, total_usd, ahora, ahora, detalles_compra))
-                                deuda_id = cursor.lastrowid
-
-                        cursor.execute("INSERT INTO ventas_maestro (fecha, subtotal, impuesto, total, metodo_pago, cliente, monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto, deuda_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                       (ahora, total_usd, 0.0, monto_ingreso_caja, metodo_final, cliente_name, m_ef_usd, m_ef_bs, m_pm, m_ptv, deuda_id))
-                        v_id = cursor.lastrowid
-                        
-                        for item in st.session_state.carrito:
-                            cursor.execute("INSERT INTO ventas_detalle (venta_id, producto_id, cantidad, precio_unitario, unidades_stock) VALUES (?, ?, ?, ?, ?)", 
-                                           (v_id, item['id'], item['cantidad_pantalla'], item['precio_u'], item['unidades_stock']))
-                            cursor.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (item['unidades_stock'], item['id']))
+                                               (cliente_name, total_usd, total_usd, ahora_exacto, ahora_exacto, detalles_compra))
                             
                         conn.commit()
                         st.session_state.carrito = []
-                        st.success("🎉 ¡Venta registrada!")
+                        st.success("🎉 ¡Venta procesada con éxito!")
                         st.rerun()
 
 # ==========================================
 # MÓDULO: EGRESOS E IMPUESTOS
 # ==========================================
 elif modulo == "📉 Egresos e Impuestos":
-    st.title("📉 Egresos e Impuestos")
+    st.title("📉 Libro de Egresos e Impuestos")
+    st.caption("Control de gastos operativos y tributos.")
+    
     t1, t2 = st.tabs(["💸 Registrar Egreso", "🏛️ Impuestos"])
+    
     with t1:
         with st.form("form_egresos"):
-            tipo = st.selectbox("Tipo", ["Compra de Mercancía/Insumos", "Pago de Salarios", "Servicios Públicos", "Seguro de Punto de Venta", "Impuestos Alcaldía"])
+            tipo = st.selectbox("Tipo de Gasto", ["Compra de Mercancía/Insumos", "Pago de Salarios", "Servicios Públicos", "Seguro de Punto de Venta", "Impuestos Alcaldía"])
             desc = st.text_input("Detalle / Proveedor")
-            moneda = st.selectbox("Moneda", ["Dólares ($)", "Bolívares (Bs.)"])
-            monto = st.number_input("Monto", min_value=0.0, format="%.2f")
-            origen = st.selectbox("Origen", ["Efectivo USD", "Efectivo Bs.", "Banco / Cuenta Bs."])
-            if st.form_submit_button("Registrar", type="primary"):
-                if monto > 0:
-                    m_usd = monto if moneda == "Dólares ($)" else monto / tasa_dolar
-                    m_bs = monto * tasa_dolar if moneda == "Dólares ($)" else monto
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO egresos_maestro (fecha, proveedor, tipo_gasto, subtotal, porcentaje_impuesto, monto_impuesto, total, origen_fondo, monto_efectivo_usd, monto_efectivo_bs, monto_bancos_bs) VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)",
-                                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), desc, tipo, m_usd, m_usd, origen, m_usd if origen == "Efectivo USD" else 0, m_bs if origen == "Efectivo Bs." else 0, m_bs if origen == "Banco / Cuenta Bs." else 0))
-                    conn.commit()
-                    st.success("✔️ Egreso guardado.")
-                    st.rerun()
+            moneda_egreso = st.selectbox("Moneda", ["Dólares ($)", "Bolívares (Bs.)"])
+            monto_eg = st.number_input("Monto", min_value=0.0, format="%.2f")
+            origen_egreso = st.selectbox("Origen del dinero", ["Efectivo USD", "Efectivo Bs.", "Banco / Cuenta Bs."])
+            
+            if st.form_submit_button("Registrar Egreso", type="primary"):
+                if monto_eg <= 0:
+                    st.error("❌ Monto inválido.")
                 else:
-                    st.error("Monto inválido.")
+                    if moneda_egreso == "Dólares ($)":
+                        m_usd = monto_eg
+                        m_bs = monto_eg * tasa_dolar
+                        total_ref_usd = monto_eg
+                    else:
+                        m_bs = monto_eg
+                        m_usd = monto_eg / tasa_dolar if tasa_dolar > 0 else 0
+                        total_ref_usd = m_usd
+                        
+                    ef_usd_reg = m_usd if origen_egreso == "Efectivo USD" else 0.0
+                    ef_bs_reg = m_bs if origen_egreso == "Efectivo Bs." else 0.0
+                    bancos_reg = m_bs if origen_egreso == "Banco / Cuenta Bs." else 0.0
+                    
+                    cursor = conn.cursor()
+                    cursor.execute("""INSERT INTO egresos_maestro 
+                        (fecha, proveedor, tipo_gasto, subtotal, porcentaje_impuesto, monto_impuesto, total, origen_fondo, monto_efectivo_usd, monto_efectivo_bs, monto_bancos_bs) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), desc, tipo, total_ref_usd, 0.0, 0.0, total_ref_usd, origen_egreso, ef_usd_reg, ef_bs_reg, bancos_reg))
+                    conn.commit()
+                    st.success("✔️ Egreso guardado con éxito.")
+                    st.rerun()
+                
     with t2:
-        dias = st.number_input("Días hacia atrás", min_value=1, value=7)
-        fecha_corte = (datetime.now() - pd.Timedelta(days=dias)).strftime("%Y-%m-%d")
-        v_per = pd.read_sql_query("SELECT SUM(total) as t FROM ventas_maestro WHERE fecha >= ? AND metodo_pago NOT IN ('Consumo Interno', 'Fiado (Crédito)')", conn, params=(fecha_corte,)).iloc[0]['t'] or 0.0
-        c_per = pd.read_sql_query("""
-            SELECT SUM(COALESCE(vd.unidades_stock, vd.cantidad) * (CASE WHEN p.es_cigarrillo = 1 AND p.unidades_por_caja > 0 THEN p.costo_insumo / p.unidades_por_caja ELSE p.costo_insumo END)) as c 
-            FROM ventas_detalle vd 
-            JOIN productos p ON vd.producto_id = p.id 
-            JOIN ventas_maestro vm ON vd.venta_id = vm.id 
+        st.subheader("Cálculo de Alcaldía")
+        dias_historia = st.number_input("Días hacia atrás", min_value=1, value=7)
+        fecha_corte = (datetime.now() - pd.Timedelta(days=dias_historia)).strftime("%Y-%m-%d")
+        
+        df_ventas_periodo = pd.read_sql_query(
+            "SELECT SUM(total) as t FROM ventas_maestro WHERE fecha >= ? AND metodo_pago NOT IN ('Consumo Interno', 'Fiado (Crédito)')", 
+            conn, params=(fecha_corte,)
+        )
+        ventas_totales_periodo = df_ventas_periodo.iloc[0]['t'] if not df_ventas_periodo.empty and pd.notna(df_ventas_periodo.iloc[0]['t']) else 0.0
+        
+        df_costos_periodo = pd.read_sql_query("""
+            SELECT SUM(COALESCE(vd.unidades_stock, vd.cantidad) * (CASE WHEN p.es_cigarrillo = 1 AND p.unidades_por_caja > 0 THEN p.costo_insumo / p.unidades_por_caja ELSE p.costo_insumo END)) as costo_t
+            FROM ventas_detalle vd
+            JOIN productos p ON vd.producto_id = p.id
+            JOIN ventas_maestro vm ON vd.venta_id = vm.id
             WHERE vm.fecha >= ? AND vm.metodo_pago NOT IN ('Consumo Interno', 'Fiado (Crédito)')
-        """, conn, params=(fecha_corte,)).iloc[0]['c'] or 0.0
-        gan_neta = v_per - c_per
-        porc = st.slider("Impuesto Municipal (%)", 1.0, 5.0, 2.0, 0.5)
-        imp = gan_neta * (porc / 100) if gan_neta > 0 else 0.0
-        st.success(f"**Ganancia Neta:** ${gan_neta:.2f} | **A Pagar:** ${imp:.2f}")
-        if st.button("🏛️ Pagar Alcaldía", disabled=(imp <= 0), type="primary"):
+        """, conn, params=(fecha_corte,))
+        costos_totales_periodo = df_costos_periodo.iloc[0]['costo_t'] if not df_costos_periodo.empty and pd.notna(df_costos_periodo.iloc[0]['costo_t']) else 0.0
+        
+        ganancia_neta_acumulada = ventas_totales_periodo - costos_totales_periodo
+        porcentaje_alcaldia = st.slider("Impuesto Municipal (%)", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
+        
+        if ganancia_neta_acumulada > 0:
+            impuesto_a_pagar = ganancia_neta_acumulada * (porcentaje_alcaldia / 100)
+            st.success(f"**Ganancia Neta:** ${ganancia_neta_acumulada:.2f} | **A Pagar:** ${impuesto_a_pagar:.2f}")
+        else:
+            impuesto_a_pagar = 0.0
+            st.warning("Sin ganancias gravables.")
+            
+        if st.button("🏛️ Pagar Alcaldía", disabled=(impuesto_a_pagar<=0), type="primary"):
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO egresos_maestro (fecha, proveedor, tipo_gasto, subtotal, porcentaje_impuesto, monto_impuesto, total, origen_fondo, monto_efectivo_usd, monto_efectivo_bs, monto_bancos_bs) VALUES (?, 'Alcaldía', 'Impuestos Alcaldía', ?, 0, 0, ?, 'Banco Bs.', 0, 0, ?)",
-                           (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), imp, imp, imp * tasa_dolar))
+            cursor.execute("""INSERT INTO egresos_maestro 
+                (fecha, proveedor, tipo_gasto, subtotal, porcentaje_impuesto, monto_impuesto, total, origen_fondo, monto_efectivo_usd, monto_efectivo_bs, monto_bancos_bs) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Alcaldía", "Impuestos Alcaldía", impuesto_a_pagar, 0.0, 0.0, impuesto_a_pagar, "Banco Bs.", 0.0, 0.0, impuesto_a_pagar * tasa_dolar))
             conn.commit()
             st.rerun()
 
@@ -742,57 +916,85 @@ elif modulo == "📉 Egresos e Impuestos":
 # MÓDULO: FINANZAS Y CAPITAL
 # ==========================================
 elif modulo == "💰 Finanzas y Capital":
-    st.title("💰 Finanzas y Capital")
-    if st.text_input("🔒 Contraseña:", type="password") != "1234":
+    st.title("💰 Módulo de Finanzas y Capital")
+    st.caption("Tesorería unificada.")
+    
+    PIN_SECRETO = "1234"
+    password_input = st.text_input("🔒 Contraseña de seguridad:", type="password")
+    
+    if password_input != PIN_SECRETO:
+        if password_input != "":
+            st.error("❌ Contraseña incorrecta.")
         st.stop()
+    
     st.success("🔓 Acceso autorizado.")
     st.markdown("---")
     
-    movs = pd.read_sql_query("SELECT tipo, efectivo_usd, efectivo_bs, bancos_bs FROM movimientos_capital", conn)
-    ef_u = ef_b = ban_b = 0.0
-    for _, r in movs.iterrows():
-        f_u, f_eb, f_bb = float(r['efectivo_usd']), float(r['efectivo_bs']), float(r['bancos_bs'])
-        if r['tipo'] == 'Inyección de Capital':
-            ef_u += f_u; ef_b += f_eb; ban_b += f_bb
-        else:
-            ef_u -= f_u; ef_b -= f_eb; ban_b -= f_bb
-            
-    v = pd.read_sql_query("SELECT monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto FROM ventas_maestro WHERE metodo_pago != 'Consumo Interno'", conn)
-    e = pd.read_sql_query("SELECT monto_efectivo_usd, monto_efectivo_bs, monto_bancos_bs FROM egresos_maestro", conn)
+    df_movs = pd.read_sql_query("SELECT tipo, efectivo_usd, efectivo_bs, bancos_bs FROM movimientos_capital", conn)
+    ef_usd_mov = ef_bs_mov = bancos_bs_mov = 0.0
     
-    tot_ef_u = ef_u + v['monto_efectivo_usd'].sum() - e['monto_efectivo_usd'].sum()
-    tot_ef_b = ef_b + v['monto_efectivo_bs'].sum() - e['monto_efectivo_bs'].sum()
-    tot_ban = ban_b + (v['monto_pago_movil'] + v['monto_punto']).sum() - e['monto_bancos_bs'].sum()
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("💵 Ef. USD", f"${tot_ef_u:,.2f}")
-    c2.metric("💵 Ef. Bs", f"{tot_ef_b:,.2f} Bs.")
-    c3.metric("🏦 Bancos", f"{tot_ban:,.2f} Bs.")
+    if not df_movs.empty:
+        for _, row in df_movs.iterrows():
+            f_usd = float(row['efectivo_usd'])
+            f_ef_bs = float(row['efectivo_bs'])
+            f_bancos = float(row['bancos_bs'])
+            if row['tipo'] == 'Inyección de Capital':
+                ef_usd_mov += f_usd
+                ef_bs_mov += f_ef_bs
+                bancos_bs_mov += f_bancos
+            else:
+                ef_usd_mov -= f_usd
+                ef_bs_mov -= f_ef_bs
+                bancos_bs_mov -= f_bancos
+
+    df_ventas = pd.read_sql_query("SELECT monto_efectivo_usd, monto_efectivo_bs, monto_pago_movil, monto_punto FROM ventas_maestro WHERE metodo_pago != 'Consumo Interno'", conn)
+    ef_usd_ventas = df_ventas['monto_efectivo_usd'].sum() if not df_ventas.empty else 0.0
+    ef_bs_ventas = df_ventas['monto_efectivo_bs'].sum() if not df_ventas.empty else 0.0
+    bancos_bs_ventas = (df_ventas['monto_pago_movil'] + df_ventas['monto_punto']).sum() if not df_ventas.empty else 0.0
+
+    df_egresos = pd.read_sql_query("SELECT monto_efectivo_usd, monto_efectivo_bs, monto_bancos_bs FROM egresos_maestro", conn)
+    ef_usd_egresos = df_egresos['monto_efectivo_usd'].sum() if not df_egresos.empty else 0.0
+    ef_bs_egresos = df_egresos['monto_efectivo_bs'].sum() if not df_egresos.empty else 0.0
+    bancos_bs_egresos = df_egresos['monto_bancos_bs'].sum() if not df_egresos.empty else 0.0
+
+    acum_ef_usd = ef_usd_mov + ef_usd_ventas - ef_usd_egresos
+    acum_ef_bs = ef_bs_mov + ef_bs_ventas - ef_bs_egresos
+    acum_bancos_bs = bancos_bs_mov + bancos_bs_ventas - bancos_bs_egresos
+                
+    st.markdown("### 🏛️ Saldos Reales")
+    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1.metric("💵 Ef. USD", f"${acum_ef_usd:,.2f}")
+    col_s2.metric("💵 Ef. Bs", f"{acum_ef_bs:,.2f} Bs.")
+    col_s3.metric("🏦 Bancos", f"{acum_bancos_bs:,.2f} Bs.")
     
     st.markdown("---")
-    with st.form("form_mov"):
-        t_mov = st.selectbox("Operación", ["Inyección de Capital", "Retiro de Capital"])
-        mu = st.number_input("Efectivo USD", min_value=0.0)
-        mb = st.number_input("Efectivo Bs", min_value=0.0)
-        mban = st.number_input("Banco Bs", min_value=0.0)
-        concepto = st.text_input("Concepto")
-        if st.form_submit_button("Guardar", type="primary"):
-            if mu > 0 or mb > 0 or mban > 0:
+    with st.form("form_mov_capital_separado"):
+        tipo_mov = st.selectbox("Operación", ["Inyección de Capital", "Retiro de Capital"])
+        m_ef_usd = st.number_input("Efectivo USD ($)", min_value=0.0, value=0.0)
+        m_ef_bs = st.number_input("Efectivo Bs.", min_value=0.0, value=0.0)
+        m_bancos_bs = st.number_input("Banco (Bs.)", min_value=0.0, value=0.0)
+        concepto_mov = st.text_input("Concepto", placeholder="Descripción...")
+        
+        if st.form_submit_button("💾 Guardar Movimiento", type="primary"):
+            if m_ef_usd <= 0 and m_ef_bs <= 0 and m_bancos_bs <= 0:
+                st.error("❌ Ingresa un monto válido.")
+            else:
                 cursor = conn.cursor()
-                cursor.execute("INSERT INTO movimientos_capital (fecha, tipo, efectivo_usd, efectivo_bs, bancos_bs, concepto) VALUES (?, ?, ?, ?, ?, ?)",
-                               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), t_mov, mu, mb, mban, concepto or t_mov))
+                cursor.execute("""INSERT INTO movimientos_capital 
+                    (fecha, tipo, efectivo_usd, efectivo_bs, bancos_bs, concepto) 
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tipo_mov, m_ef_usd, m_ef_bs, m_bancos_bs, concepto_mov if concepto_mov else tipo_mov))
                 conn.commit()
-                st.success("✔️ Guardado.")
+                st.success("✔️ Movimiento registrado.")
                 st.rerun()
 
 # ==========================================
-# MÓDULO: DEUDORES (FIADOS CORREGIDO DEFINITIVO)
+# MÓDULO: DEUDORES (FIADOS CON TABLA DETALLADA Y FILTRO DE FECHA)
 # ==========================================
 elif modulo == "👥 Control de Deudores (Fiados)":
     st.title("👥 Cuentas por Cobrar (Fiados)")
     st.caption("Desglose individual por deudor y abonos.")
     
-    # Leemos la deuda activa junto con su fecha de origen
     df_deudas = pd.read_sql_query("SELECT id, cliente, saldo_pendiente, fecha_origen FROM deudas WHERE saldo_pendiente >= 0.01", conn)
     
     if not df_deudas.empty:
@@ -804,7 +1006,6 @@ elif modulo == "👥 Control de Deudores (Fiados)":
             fecha_origen = row['fecha_origen']
             
             with st.expander(f"👤 **{cliente_actual}** — Deuda: **${saldo_usd:.2f}** *({saldo_bs:,.2f} Bs.)*"):
-                # Consultamos las ventas fiadas de este cliente desde la fecha en que se inició esta deuda actual
                 query_articulos = """
                     SELECT p.nombre, vd.cantidad, vd.precio_unitario, vm.fecha
                     FROM ventas_detalle vd
@@ -826,6 +1027,7 @@ elif modulo == "👥 Control de Deudores (Fiados)":
                         sub_usd = cant * p_u_usd
                         sub_bs = sub_usd * tasa_dolar
                         items_formateados.append({
+                            "Fecha": art['fecha'],
                             "Artículo": art['nombre'],
                             "Cant.": cant,
                             "Precio Unit. ($)": f"${p_u_usd:.2f}",
@@ -835,9 +1037,8 @@ elif modulo == "👥 Control de Deudores (Fiados)":
                         })
                     st.dataframe(pd.DataFrame(items_formateados), use_container_width=True, hide_index=True)
                 else:
-                    st.info("No hay artículos registrados para este período de deuda.")
+                    st.info("Sin artículos detallados para esta cuenta.")
 
-                st.markdown("---")
                 monto_abono = st.number_input("Monto a abonar ($)", min_value=0.01, max_value=saldo_usd, value=saldo_usd, key=f"abono_{d_id}")
                 metodo_pago_abono = st.selectbox("Método de Abono", ["Efectivo (Divisa/USD)", "Efectivo (Bolívares)", "Pago Móvil / Transferencia", "Punto de Venta (Tarjeta)"], key=f"metodo_abono_{d_id}")
                 
@@ -869,18 +1070,19 @@ elif modulo == "👥 Control de Deudores (Fiados)":
         st.success("🎉 ¡Todos los clientes están al día!")
 
 # ==========================================
-# MÓDULO: DASHBOARD Y CIERRE
+# MÓDULO: DASHBOARD Y CIERRE (CON ARQUEO RESTAURADO)
 # ==========================================
 elif modulo == "📊 Dashboard / Cierre Caja":
     st.title("📊 Panel de Control y Cierre de Caja")
-    fecha_sel = st.date_input("📅 Día:", value=datetime.now())
-    hoy = fecha_sel.strftime("%Y-%m-%d")
+    st.caption("Métricas financieras y arqueo diario.")
+    
+    fecha_seleccionada = st.date_input("📅 Día:", value=datetime.now())
+    hoy = fecha_seleccionada.strftime("%Y-%m-%d")
     param_hoy = f"{hoy}%"
     
-    df_v = pd.read_sql_query("SELECT * FROM ventas_maestro WHERE fecha LIKE ?", conn, params=(param_hoy,))
-    df_e = pd.read_sql_query("SELECT total FROM egresos_maestro WHERE fecha LIKE ?", conn, params=(param_hoy,))
-    
-    df_c = pd.read_sql_query("""
+    query_ventas = "SELECT * FROM ventas_maestro WHERE fecha LIKE ?"
+    query_egresos = "SELECT total FROM egresos_maestro WHERE fecha LIKE ?"
+    query_costos = """
         SELECT SUM(
             COALESCE(vd.unidades_stock, vd.cantidad) * (
                 CASE 
@@ -895,26 +1097,34 @@ elif modulo == "📊 Dashboard / Cierre Caja":
         WHERE vm.fecha LIKE ? 
           AND vm.metodo_pago != 'Consumo Interno' 
           AND vm.metodo_pago NOT LIKE 'Abono%'
-    """, conn, params=(param_hoy,))
+    """
     
-    if not df_v.empty:
-        df_v_com = df_v[(~df_v['metodo_pago'].str.startswith('Abono', na=False)) & (df_v['metodo_pago'] != 'Consumo Interno')]
-        df_ab = df_v[df_v['metodo_pago'].str.startswith('Abono', na=False)]
+    df_ventas_hoy = pd.read_sql_query(query_ventas, conn, params=(param_hoy,))
+    df_egresos_hoy = pd.read_sql_query(query_egresos, conn, params=(param_hoy,))
+    df_costos_hoy = pd.read_sql_query(query_costos, conn, params=(param_hoy,))
+    
+    if not df_ventas_hoy.empty:
+        df_ventas_comerciales = df_ventas_hoy[(~df_ventas_hoy['metodo_pago'].str.startswith('Abono', na=False)) & (df_ventas_hoy['metodo_pago'] != 'Consumo Interno')]
+        df_abonos = df_ventas_hoy[df_ventas_hoy['metodo_pago'].str.startswith('Abono', na=False)]
     else:
-        df_v_com = df_ab = pd.DataFrame(columns=['subtotal', 'total'])
+        df_ventas_comerciales = pd.DataFrame(columns=['subtotal', 'total', 'metodo_pago'])
+        df_abonos = pd.DataFrame(columns=['subtotal', 'total', 'metodo_pago'])
         
-    val_desp = df_v_com['subtotal'].sum() if not df_v_com.empty else 0.0
-    costo_tot = df_c.iloc[0]['costo_total'] if not df_c.empty and pd.notna(df_c.iloc[0]['costo_total']) else 0.0
-    egresos_h = df_e['total'].sum() if not df_e.empty else 0.0
-    com_punto = df_v_com['subtotal'].sum() - df_v_com['total'].sum()
+    valor_mercancia_despachada = df_ventas_comerciales['subtotal'].sum() if not df_ventas_comerciales.empty else 0.0
+    costo_mercancia = df_costos_hoy.iloc[0]['costo_total'] if not df_costos_hoy.empty and pd.notna(df_costos_hoy.iloc[0]['costo_total']) else 0.0
+    egresos_hoy = df_egresos_hoy['total'].sum() if not df_egresos_hoy.empty else 0.0
     
-    ganancia_neta = val_desp - com_punto - costo_tot - egresos_h
-    caja_final = (df_v_com['total'].sum() if not df_v_com.empty else 0.0) + (df_ab['total'].sum() if not df_ab.empty else 0.0) - egresos_h
+    comisiones_punto_descontadas = df_ventas_comerciales['subtotal'].sum() - df_ventas_comerciales['total'].sum()
+    ganancia_neta = valor_mercancia_despachada - comisiones_punto_descontadas - costo_mercancia - egresos_hoy
+    
+    dinero_ventas = df_ventas_comerciales['total'].sum() if not df_ventas_comerciales.empty else 0.0
+    dinero_abonos = df_abonos['total'].sum() if not df_abonos.empty else 0.0
+    caja_final = dinero_ventas + dinero_abonos - egresos_hoy
 
     st.markdown("### 📈 Rendimiento del Día")
-    st.metric("📦 Valor Despachado", f"${val_desp:.2f}")
-    st.metric("📉 Costo de Mercancía Vendida", f"${costo_tot:.2f}")
-    st.metric("📤 Egresos", f"${egresos_h:.2f}")
+    st.metric("📦 Valor Despachado", f"${valor_mercancia_despachada:.2f}")
+    st.metric("📉 Costo de Mercancía Vendida", f"${costo_mercancia:.2f}")
+    st.metric("📤 Egresos", f"${egresos_hoy:.2f}")
     
     if ganancia_neta >= 0:
         st.metric("💰 GANANCIA REAL", f"${ganancia_neta:.2f}")
@@ -922,19 +1132,28 @@ elif modulo == "📊 Dashboard / Cierre Caja":
         st.metric("🚨 PÉRDIDA", f"${ganancia_neta:.2f}", delta_color="inverse")
         
     st.markdown("---")
+    st.markdown("### 💵 Arqueo por Método")
+    efectivo_usd_total = df_ventas_hoy['monto_efectivo_usd'].sum() if ('monto_efectivo_usd' in df_ventas_hoy.columns and not df_ventas_hoy.empty) else 0.0
+    efectivo_bs_nominal = df_ventas_hoy['monto_efectivo_bs'].sum() if ('monto_efectivo_bs' in df_ventas_hoy.columns and not df_ventas_hoy.empty) else 0.0
+    pago_movil_nominal = df_ventas_hoy['monto_pago_movil'].sum() if ('monto_pago_movil' in df_ventas_hoy.columns and not df_ventas_hoy.empty) else 0.0
+    punto_neto_nominal = df_ventas_hoy['monto_punto'].sum() if ('monto_punto' in df_ventas_hoy.columns and not df_ventas_hoy.empty) else 0.0
+
+    st.write(f"- 💵 Ef. USD: **${efectivo_usd_total:.2f}**")
+    st.write(f"- 🇻🇪 Ef. Bs: **{efectivo_bs_nominal:,.2f} Bs.**")
+    st.write(f"- 📱 Pago Móvil: **{pago_movil_nominal:,.2f} Bs.**")
+    st.write(f"- 💳 Punto Neto: **{punto_neto_nominal:,.2f} Bs.**")
+    
+    st.markdown("---")
     st.metric("⚖️ BALANCE ESPERADO EN CAJA", f"${caja_final:.2f}")
 
     if st.button("🏁 EJECUTAR CIERRE DE CAJA DIARIO", type="primary"):
         cursor = conn.cursor()
-        ef_u = df_v['monto_efectivo_usd'].sum() if 'monto_efectivo_usd' in df_v.columns else 0.0
-        ef_b = df_v['monto_efectivo_bs'].sum() if 'monto_efectivo_bs' in df_v.columns else 0.0
-        ptv = df_v['monto_punto'].sum() if 'monto_punto' in df_v.columns else 0.0
-        pm = df_v['monto_pago_movil'].sum() if 'monto_pago_movil' in df_v.columns else 0.0
-        
-        cursor.execute("INSERT INTO cierres_diarios (fecha, ganancia_neta, efectivo_usd, efectivo_bs, punto_neto, pago_movil_transferencia, balance_total_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (hoy, ganancia_neta, ef_u, ef_b, ptv, pm, caja_final))
+        cursor.execute("""INSERT INTO cierres_diarios 
+            (fecha, ganancia_neta, efectivo_usd, efectivo_bs, punto_neto, pago_movil_transferencia, balance_total_usd) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (hoy, ganancia_neta, efectivo_usd_total, efectivo_bs_nominal, punto_neto_nominal, pago_movil_nominal, caja_final))
         conn.commit()
-        st.success("🔒 ¡Cierre guardado!")
+        st.success("🔒 ¡Cierre guardado con éxito!")
         st.balloons()
 
 # ==========================================
@@ -942,15 +1161,25 @@ elif modulo == "📊 Dashboard / Cierre Caja":
 # ==========================================
 elif modulo == "📜 Historial de Cierres":
     st.title("📜 Historial de Cierres")
+    
     df_cierres = pd.read_sql_query("SELECT fecha as 'Fecha', ganancia_neta as 'Ganancia ($)', balance_total_usd as 'Balance ($)' FROM cierres_diarios ORDER BY id DESC", conn)
+    
     if not df_cierres.empty:
         st.dataframe(df_cierres, use_container_width=True, hide_index=True)
+        
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_cierres.to_excel(writer, index=False, sheet_name='Cierres')
-        st.download_button("📊 Descargar Excel", output.getvalue(), f"Cierres_{datetime.now().strftime('%Y%m%d')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            
+        st.download_button(
+            label="📊 Descargar Excel",
+            data=output.getvalue(),
+            file_name=f"Cierres_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
     else:
-        st.info("Sin cierres.")
+        st.info("No hay cierres registrados.")
 
 if conn:
     conn.close()
